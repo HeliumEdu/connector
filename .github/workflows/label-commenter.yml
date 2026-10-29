@@ -1,0 +1,15 @@
+name: "Label Commenter"
+
+run-name: Label Commenter #${{ github.event.issue.number }}
+
+on:
+  issues:
+    types:
+      - labeled
+
+jobs:
+  label-commenter:
+    uses: HeliumEdu/.github/.github/workflows/label-commenter.yml@main
+    permissions:
+      issues: write
+      pull-requests: write

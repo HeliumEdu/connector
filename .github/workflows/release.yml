@@ -1,0 +1,126 @@
+name: Release
+
+run-name: Release ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (must match helium_connector/__init__.py)'
+        required: true
+        type: string
+      deploy_after_release:
+        description: 'Deploy to prod after release'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: none
+  pull-requests: none
+
+jobs:
+  release:
+    name: Release
+
+    env:
+      FORCE_COLOR: 1
+      PYTHONUNBUFFERED: 1
+      PYTHONDONTWRITEBYTECODE: 1
+      VERSION: ${{ inputs.version }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Validate version
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must be MAJOR.MINOR.PATCH" && exit 1
+          fi
+          if ! grep -q "__version__ = \"$VERSION\"" helium_connector/__init__.py; then
+            echo "Version not bumped in helium_connector/__init__.py" && exit 1
+          fi
+      - name: Install dependencies
+        run: make install
+      - name: Check and test
+        run: make check test
+      - name: Package
+        run: |
+          make package
+          mv build/connector.zip "build/connector-$VERSION.zip"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" "build/connector-$VERSION.zip" \
+            --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Upload to S3
+        env:
+          BUCKET_NAME: heliumedu
+        run: |
+          aws s3 cp "build/connector-$VERSION.zip" "s3://${BUCKET_NAME}/helium/connector/connector-$VERSION.zip"
+
+  deploy:
+    name: Deploy to prod
+    needs: release
+    if: inputs.deploy_after_release
+
+    env:
+      TERRAFORM_API_TOKEN: ${{ secrets.TERRAFORM_API_TOKEN }}
+      VERSION: ${{ inputs.version }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.HELIUM_BOT_APP_ID }}
+          private-key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
+          owner: HeliumEdu
+      - uses: actions/checkout@v6
+      - name: Checkout infra repository
+        uses: actions/checkout@v6
+        with:
+          repository: HeliumEdu/infra
+          token: ${{ steps.app-token.outputs.token }}
+          path: deploy
+          fetch-depth: 0
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Get GitHub App bot user ID
+        id: get-bot-user-id
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+      - name: Setup git
+        run: |
+          cd deploy
+          git config user.name "${{ steps.app-token.outputs.app-slug }}[bot]"
+          git config user.email "${{ steps.get-bot-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Install dependencies
+        run: pip install requests==2.34.2
+      - name: Run deployment script
+        run: ./bin/deploy-release.py "$VERSION" --deploy-repo ./deploy

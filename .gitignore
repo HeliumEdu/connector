@@ -1,0 +1,15 @@
+.idea/
+.vscode/
+*.iml
+*.pyc
+.coverage
+*.log
+*.pytest_cache
+*.mypy_cache
+.dmypy.json
+venv
+dist/
+*.egg-info
+build
+.env
+.DS_Store

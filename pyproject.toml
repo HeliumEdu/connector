@@ -1,0 +1,88 @@
+[project]
+name = "helium-connector"
+dynamic = ["version"]
+description = "MCP connector for Helium - Student Planner: import a term from syllabi and read your planner from an AI assistant"
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["helium", "student-planner", "mcp", "syllabus", "education"]
+authors = [{ name = "Alex Laird", email = "contact@alexlaird.com" }]
+maintainers = [{ name = "Alex Laird", email = "contact@alexlaird.com" }]
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28,<1",
+    "mangum>=0.22,<1",
+    "mcp>=2.3,<3",
+    "python-dateutil>=2.9,<3",
+    "sentry-sdk>=2.73,<3",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Education",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Education",
+]
+
+[project.optional-dependencies]
+dev = [
+    "coverage[toml]",
+    "flake8",
+    "flake8-pyproject",
+    "pep8-naming",
+    "mypy",
+    "types-python-dateutil",
+    "uvicorn",
+]
+
+[project.urls]
+Changelog = "https://github.com/HeliumEdu/connector/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/HeliumEdu/connector#readme"
+"Source Code" = "https://github.com/HeliumEdu/connector"
+
+[tool.setuptools]
+packages = ["heliumedu", "helium_connector"]
+
+[tool.setuptools.package-data]
+heliumedu = ["py.typed"]
+helium_connector = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "helium_connector.__version__" }
+
+[tool.coverage.run]
+omit = [
+    "venv/**",
+    "*/tests/**",
+    "helium_connector/__main__.py",
+]
+
+[tool.coverage.report]
+precision = 2
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.xml]
+output = "build/coverage/coverage.xml"
+
+[tool.coverage.html]
+title = "Coverage Report"
+directory = "build/coverage"
+
+[tool.mypy]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["mangum.*"]
+ignore_missing_imports = true
+
+[tool.flake8]
+max-line-length = 119
+statistics = true
+exclude = "venv/*,build/*,dist/*,.egg-info/*"
