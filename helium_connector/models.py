@@ -85,7 +85,7 @@ Schedule = Annotated[WeeklySchedule | WeekRotationSchedule | DayCycleSchedule, F
 
 class Category(_Input):
     """
-    A grading category, as the syllabus weighs it.
+    A grading category, as the syllabus weighs it. A class is graded either by weighted categories or by points.
     """
 
     title: Title
@@ -96,7 +96,8 @@ class Category(_Input):
 
 class Homework(_Input):
     """
-    One graded item: homework, a quiz, an exam, a project.
+    One graded item with its own due date: homework, a quiz, an exam, a project. Recurring work ("weekly problem sets")
+    is one assignment per due date.
     """
 
     model_config = ConfigDict(title="Assignment")
@@ -107,22 +108,25 @@ class Homework(_Input):
                                              "Uncategorized.")
     due_date: date = Field(description="Local due date (an exam's date).")
     due_time: time | None = Field(default=None,
-                                  description="Local due time (an exam's start). Unset makes it an all-day item.")
+                                  description="Local due time (an exam's start). Work due in class is due when the "
+                                              "class starts that day. Unset makes it an all-day item.")
     end_time: time | None = Field(default=None, description="Local end time, for items that span time (exams).")
 
 
 class Course(_Input):
     """
-    One class, from its syllabus.
+    One class, from its syllabus. A lecture and its lab, recitation, or discussion graded together are one class with
+    a schedule each; graded separately, they're separate classes.
     """
 
     model_config = ConfigDict(title="Class")
 
     title: Title
     credits: Decimal | None = Field(default=None, ge=0, le=99, decimal_places=2,
-                                    description="Credit hours. Unset when the syllabus doesn't say.")
-    room: str | None = Field(default=None, max_length=255)
-    is_online: bool = False
+                                    description="Credit hours. Syllabi often leave these out, though the student "
+                                                "knows them. Unset imports as 0.")
+    room: str | None = Field(default=None, max_length=255, description="Where the class meets in person.")
+    is_online: bool = Field(default=False, description="The class meets online, with no room.")
     teacher_name: str | None = Field(default=None, max_length=255)
     teacher_email: str | None = Field(default=None, max_length=254)
     website: str | None = Field(default=None, max_length=3000)
@@ -162,7 +166,7 @@ class Event(_Input):
 
 class CourseGroup(_Input):
     """
-    The term the classes belong to (a Class Group in Helium).
+    The term the classes belong to (a Class Group in Helium). One term holds every class the student takes in it.
     """
 
     model_config = ConfigDict(title="Term")
@@ -176,10 +180,24 @@ class CourseGroup(_Input):
 
 class TermPlan(_Input):
     """
-    A term's assignments, events, classes, schedules, and grading, read from syllabi. Dates and times are local: Helium
-    places them in the time zone set in the student's Helium account.
+    A term's assignments, events, classes, schedules, and grading, read from the syllabi of every class in the term.
+    Dates and times are local: Helium places them in the time zone set in the student's Helium account.
     """
 
     course_group: CourseGroup = Field(alias="term")
+    courses: list[Course] = Field(min_length=1, max_length=50, alias="classes")
+    events: list[Event] = Field(default_factory=list, max_length=500)
+
+
+class ClassesPlan(_Input):
+    """
+    Classes to add to a term already in Helium (a syllabus that came after the term was imported), with their
+    assignments, schedules, and grading, and any events. Dates and times are local: Helium places them in the time zone
+    set in the student's Helium account.
+    """
+
+    model_config = ConfigDict(title="Classes")
+
+    course_group_id: int = Field(alias="term_id", description="The term's id, from list_classes.")
     courses: list[Course] = Field(min_length=1, max_length=50, alias="classes")
     events: list[Event] = Field(default_factory=list, max_length=500)

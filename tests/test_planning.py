@@ -10,8 +10,10 @@ from helium_connector.planning import (
     MAX_EVENTS,
     MAX_REPEAT_DAYS,
     build_import,
+    existing_term,
     explain_platform_errors,
     summarize,
+    to_confirm,
     validate,
     warnings,
 )
@@ -454,9 +456,56 @@ class TestWarningsAndSummary(unittest.TestCase):
 
         # THEN
         self.assertEqual(["Class 'HIST 200': category weights add up to 85%, not 100%.",
-                          "Class 'HIST 200': 1 assignment(s) have no category and go in Uncategorized.",
-                          "Class 'HIST 200': no meeting times, so it won't show on the calendar.",
-                          "Credits aren't set for 'HIST 200', so they import with 0 credits."], notes)
+                          "Class 'HIST 200': 1 assignment(s) have no category and go in Uncategorized."], notes)
+
+    def test_to_confirm(self) -> None:
+        # GIVEN
+        plan = given_a_plan()
+
+        # WHEN
+        gaps = to_confirm(plan)
+
+        # THEN
+        self.assertEqual(["Class 'ENG 101': credits aren't set, so it imports with 0 credits.",
+                          "Class 'ENG 101': no grading categories, so its assignments go in Uncategorized.",
+                          "Class 'ENG 101': 1 assignment(s) have no due time, so they're all-day."], gaps)
+
+    def test_to_confirm_in_person_class_without_details(self) -> None:
+        # GIVEN
+        plan = given_a_plan(courses=[
+            Course(title="CHEM 142", credits=Decimal(5)),
+            Course(title="MATH 124", credits=Decimal(5),
+                   schedules=[WeeklySchedule(pattern="weekly", meetings=[
+                       Meeting(days=["tuesday"], start_time=time(9), end_time=time(10))])])])
+
+        # WHEN
+        gaps = to_confirm(plan)
+
+        # THEN
+        self.assertEqual(["Class 'CHEM 142': no meeting times, so it won't show on the calendar.",
+                          "Class 'CHEM 142': no grading categories, so its assignments go in Uncategorized.",
+                          "Class 'CHEM 142': no assignments.",
+                          "Class 'MATH 124': no room, and it isn't marked online.",
+                          "Class 'MATH 124': no grading categories, so its assignments go in Uncategorized.",
+                          "Class 'MATH 124': no assignments."], gaps)
+
+    def test_existing_term(self) -> None:
+        # WHEN
+        term = existing_term({"id": 4, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
+                              "exceptions": "20260907,20261126"})
+
+        # THEN
+        self.assertEqual("Fall 2026", term.title)
+        self.assertEqual((date(2026, 8, 31), date(2026, 12, 18)), (term.start_date, term.end_date))
+        self.assertEqual([date(2026, 9, 7), date(2026, 11, 26)], term.no_class_dates)
+
+    def test_existing_term_without_exceptions(self) -> None:
+        # WHEN
+        term = existing_term({"id": 4, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
+                              "exceptions": ""})
+
+        # THEN
+        self.assertEqual([], term.no_class_dates)
 
     def test_repeated_classes_and_events_outside_the_term(self) -> None:
         # GIVEN

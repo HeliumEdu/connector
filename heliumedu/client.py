@@ -82,19 +82,27 @@ class HeliumClient:
         """
         return await self._get_object("/auth/user/")
 
-    async def import_data(self, data: dict[str, Any], *, dry_run: bool = False) -> ImportResult:
+    async def import_data(self,
+                          data: dict[str, Any],
+                          *,
+                          dry_run: bool = False,
+                          course_group_id: int | None = None) -> ImportResult:
         """
         Import a file's worth of data into the account, all or nothing. Entities reference each other by ids that
         only need to be unique within ``data``; Helium assigns new ones.
 
         :param data: The import, shaped like ``GET /importexport/export/``.
         :param dry_run: Validate the import without keeping it.
+        :param course_group_id: An existing class group to import every class into, in place of ``data``'s class
+                                groups (which aren't imported).
         :return: What was imported.
         :raises: :class:`~heliumedu.exception.HeliumValidationError`: When Helium rejects the data.
         :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         files = {"file[]": (IMPORT_FILE_NAME, json.dumps(data).encode("utf-8"), "application/json")}
-        params = {"dry_run": "true"} if dry_run else None
+        params = {"dry_run": "true"} if dry_run else {}
+        if course_group_id is not None:
+            params["course_group"] = str(course_group_id)
         body = await self._request("POST", "/importexport/import/", params=params, files=files)
 
         if not isinstance(body, dict):
