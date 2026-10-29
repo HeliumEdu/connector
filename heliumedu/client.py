@@ -5,7 +5,6 @@ from typing import Any, Final
 
 import httpx
 
-from heliumedu import __version__
 from heliumedu.exception import (
     HeliumAuthError,
     HeliumConnectionError,
@@ -71,7 +70,7 @@ class HeliumClient:
         self.base_url: str = base_url.rstrip("/")
         #: The ``User-Agent`` every request sends: this package, then the caller's own product (e.g.
         #: ``helium-connector/1.0.0``) when given.
-        self.user_agent: str = f"heliumedu/{__version__}" + (f" {agent}" if agent else "")
+        self.user_agent: str = "heliumedu" + (f" {agent}" if agent else "")
 
     async def get_user(self) -> dict[str, Any]:
         """
