@@ -2,7 +2,6 @@ from datetime import date
 
 import httpx
 
-from heliumedu import __version__
 from heliumedu.client import IMPORT_FILE_NAME, HeliumClient
 from heliumedu.exception import (
     HeliumAuthError,
@@ -48,7 +47,7 @@ class TestGetUser(HeliumClientTestCase):
         await client.get_user()
 
         # THEN
-        self.assertEqual(f"heliumedu/{__version__} helium-connector/1.0.0",
+        self.assertEqual("heliumedu helium-connector/1.0.0",
                          self.helium.requests[0].headers["User-Agent"])
 
     async def test_refused_token(self) -> None:

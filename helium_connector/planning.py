@@ -8,8 +8,8 @@ from decimal import Decimal
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-from helium_connector.models import WEEKDAYS, Course, CycleSlot, DayCycleSchedule, Event, Homework, Meeting, \
-    Schedule, TermPlan, Weekday, WeekRotationSchedule
+from helium_connector.models import WEEKDAYS, Course, CourseGroup, CycleSlot, DayCycleSchedule, Event, Homework, \
+    Meeting, Schedule, TermPlan, Weekday, WeekRotationSchedule
 from helium_connector.reads import describe_numbered_days
 
 #: The most classes one import takes.
@@ -101,12 +101,6 @@ def warnings(plan: TermPlan) -> list[str]:
         if course.categories and uncategorized:
             notes.append(f"Class '{course.title}': {len(uncategorized)} assignment(s) have no category and go in "
                          f"Uncategorized.")
-        if not course.schedules and not course.is_online:
-            notes.append(f"Class '{course.title}': no meeting times, so it won't show on the calendar.")
-
-    without_credits = [f"'{course.title}'" for course in plan.courses if course.credits is None]
-    if without_credits:
-        notes.append(f"Credits aren't set for {', '.join(without_credits)}, so they import with 0 credits.")
 
     for event in plan.events:
         last = event.repeat.until if event.repeat else event.start_date
@@ -114,6 +108,47 @@ def warnings(plan: TermPlan) -> list[str]:
             notes.append(f"Event '{event.title}' ({_describe_event_dates(event)}) falls outside the term "
                          f"({course_group.start_date} to {course_group.end_date}).")
     return notes
+
+
+def to_confirm(plan: TermPlan) -> list[str]:
+    """
+    What the plan leaves unset that syllabi often omit and the student usually knows.
+
+    :param plan: The plan (it may also have problems).
+    :return: Each gap, naming the class and what it imports as.
+    """
+    gaps: list[str] = []
+    for course in plan.courses:
+        name = f"Class '{course.title}'"
+        if course.credits is None:
+            gaps.append(f"{name}: credits aren't set, so it imports with 0 credits.")
+        if not course.schedules and not course.is_online:
+            gaps.append(f"{name}: no meeting times, so it won't show on the calendar.")
+        if course.schedules and not course.is_online and not course.room:
+            gaps.append(f"{name}: no room, and it isn't marked online.")
+        if not course.categories:
+            gaps.append(f"{name}: no grading categories, so its assignments go in Uncategorized.")
+        if not course.homework:
+            gaps.append(f"{name}: no assignments.")
+        untimed = [homework for homework in course.homework if homework.due_time is None]
+        if untimed:
+            gaps.append(f"{name}: {len(untimed)} assignment(s) have no due time, so they're all-day.")
+    return gaps
+
+
+def existing_term(course_group: dict[str, Any]) -> CourseGroup:
+    """
+    A term already in Helium, as a plan's term, so classes added to it are checked against its dates.
+
+    :param course_group: The class group, as ``GET /planner/coursegroups/`` returns it.
+    :return: The term.
+    """
+    no_class_dates = [datetime.strptime(day, "%Y%m%d").date()
+                      for day in (course_group.get("exceptions") or "").split(",") if re.fullmatch(r"\d{8}", day)]
+    return CourseGroup.model_construct(title=course_group["title"],
+                                       start_date=date.fromisoformat(course_group["start_date"]),
+                                       end_date=date.fromisoformat(course_group["end_date"]),
+                                       no_class_dates=no_class_dates)
 
 
 def summarize(plan: TermPlan) -> dict[str, Any]:
@@ -228,18 +263,22 @@ def build_import(plan: TermPlan, time_zone: ZoneInfo) -> ImportPayload:
     return ImportPayload(data, labels)
 
 
-def describe_import(plan: TermPlan, counts: dict[str, int], ids: dict[str, dict[str, int]]) -> dict[str, Any]:
+def describe_import(plan: TermPlan,
+                    counts: dict[str, int],
+                    ids: dict[str, dict[str, int]],
+                    term_id: int | None = None) -> dict[str, Any]:
     """
     What an import created, in the plan's words, with the ids Helium assigned.
 
     :param plan: The imported plan.
     :param counts: Helium's counts, by import section.
     :param ids: The ids Helium assigned, by import section, then by the id in the import file.
-    :return: The new term's id, each class's id, and how many of each thing were created.
+    :param term_id: The term the classes went into, when it was already in Helium.
+    :return: The term's id, each class's id, and how many of each thing were created.
     """
     class_ids = ids.get("courses", {})
     return {
-        "term_id": ids.get("course_groups", {}).get("1"),
+        "term_id": term_id or ids.get("course_groups", {}).get("1"),
         "classes": [{"title": course.title, "id": class_ids.get(str(course_id))}
                     for course_id, course in enumerate(plan.courses, start=1)],
         "created": {name: counts[section] for section, name in _SECTION_NAMES.items() if counts.get(section)},

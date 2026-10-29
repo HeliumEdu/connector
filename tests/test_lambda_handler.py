@@ -53,7 +53,7 @@ class TestLambdaHandler(unittest.TestCase):
         # THEN
         for response in responses:
             self.assertEqual(200, response["statusCode"], response)
-            self.assertEqual(8, len(json.loads(response["body"])["result"]["tools"]))
+            self.assertEqual(10, len(json.loads(response["body"])["result"]["tools"]))
 
     def test_unauthenticated_invocation_is_challenged(self) -> None:
         # GIVEN

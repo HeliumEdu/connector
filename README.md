@@ -64,21 +64,61 @@ choose **Allow** when it opens in your browser. For a local connector, use `http
 Attach your syllabi and ask your assistant to import the term, or ask about your planner, and it will use the following
 tools:
 
-| Tool                  | Returns                                                                               |
-|-----------------------|---------------------------------------------------------------------------------------|
-| `preview_import_term` | Every problem with a term's plan, or a summary to confirm, without saving anything    |
-| `import_term`         | The new term, imported all at once; a duplicate term is refused unless told otherwise |
-| `list_assignments`    | Assignments due in a window or matching text, with class, category, completion, grade |
-| `list_events`         | Events in a window or matching text, with repeating events listed per occurrence      |
-| `list_notes`          | Notes, optionally matching text or for one assignment, as plain text                  |
-| `list_classes`        | Classes by term, with meeting times, teacher, credits, and grading categories         |
-| `list_resources`      | Resources by resource group, with status, price, and the classes each is for          |
-| `get_grades`          | Grades, per class and category                                                        |
+| Tool                     | Access | Returns                                                                               |
+|--------------------------|--------|---------------------------------------------------------------------------------------|
+| `preview_import_term`    | Read   | Every problem with a term's plan, or a summary to confirm, without saving anything    |
+| `import_term`            | Write  | The new term's id and its classes' ids, imported all at once                          |
+| `preview_import_classes` | Read   | The same check, for classes to add to a term already in Helium                        |
+| `import_classes`         | Write  | The new classes' ids, added to a term already in Helium all at once                   |
+| `list_assignments`       | Read   | Assignments due in a window or matching text, with class, category, completion, grade |
+| `list_events`            | Read   | Events in a window or matching text, with repeating events listed per occurrence      |
+| `list_notes`             | Read   | Notes, optionally matching text or for one assignment, as plain text                  |
+| `list_classes`           | Read   | Classes by term, with meeting times, teacher, credits, and grading categories         |
+| `list_resources`         | Read   | Resources by resource group, with status, price, and the classes each is for          |
+| `get_grades`             | Read   | Grades, per class and category                                                        |
 
-`import_term` is the only tool that writes, and it only adds a new term: no tool changes or deletes anything.
+#### Permissions
 
-The assignment, event, and note lists return results a page at a time (`limit` and `page`), with `total` and
-`has_more`.
+Signing in grants two scopes, shown on Helium's consent screen:
+
+- `planner:read`: every read tool.
+- `planner:import`: `preview_import_term`, `import_term`, `preview_import_classes`, and `import_classes`.
+
+`import_term` and `import_classes` are the only writes, and none is sensitive: no tool sends messages, makes payments,
+or changes or deletes anything. `import_term` adds one new term (its classes, meeting times, grading categories,
+assignments, and events), and `import_classes` adds classes to a term already in Helium, each in a single transaction,
+so a failed import saves nothing. `import_term` refuses a term whose title and dates are already in Helium unless
+`allow_duplicate_term` is set, and `import_classes` refuses a class already in the term unless
+`allow_duplicate_classes` is set. The previews check the same plan with Helium without saving it.
+
+#### Inputs
+
+- `preview_import_term`, `import_term`: `plan` (the term, its classes, and its events, with local dates and times),
+  `allow_duplicate_term`.
+- `preview_import_classes`, `import_classes`: `plan` (the term's id, from `list_classes`, plus the classes and events),
+  `allow_duplicate_classes`.
+- `list_assignments`: `start_date`, `end_date`, `class_id`, `status` (`all`, `incomplete`, `completed`, `overdue`),
+  `query`, `limit` (1-100, default 25), `page`.
+- `list_events`: `start_date`, `end_date`, `query`, `limit` (1-100, default 25), `page`.
+- `list_notes`: `query`, `assignment_id`, `limit` (1-10, default 5), `page`.
+- `list_classes`, `get_grades`: `include_past_terms`.
+- `list_resources`: `class_id`.
+
+Each tool's JSON Schema, served by the connector, describes every field. Dates and times are local to the time zone
+set in the user's Helium account. A window covers at most 366 days. Lists return results a page at a time, with
+`total` and `has_more`.
+
+For assistants that offer prompts, the `import_syllabi` prompt walks through a term's import: gathering every
+syllabus, asking the student about anything the syllabi leave unclear, and previewing before importing.
+
+#### Errors and Limits
+
+- A plan Helium can't accept returns `problems`, each naming the class, assignment, or event it's about, rather than an
+  error. Details worth checking, such as category weights that don't add up to 100%, return as `warnings`, and what
+  the plan leaves unset that the student likely knows, such as a class's credits, returns as `to_confirm`.
+- A signed-out connection, or one not given access for a tool, returns an error asking the user to reconnect.
+- Requests share the user's Helium API rate limit (130 requests per minute). Past it, the error says how many seconds
+  to wait.
 
 ## Documentation
 
