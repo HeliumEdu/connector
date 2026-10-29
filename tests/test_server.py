@@ -7,6 +7,7 @@ import httpx
 
 from helium_connector.app import create_app
 from helium_connector.models import Course
+from helium_connector.server import DOCS_URL
 from helium_connector.settings import Settings
 from tests.testcase import IMPORT_COUNTS, TOKEN, AsyncTestCase, given_a_plan, uploaded_import
 
@@ -120,6 +121,17 @@ class TestAuthorization(McpTestCase):
         # THEN
         self.assertEqual(405, response.status_code)
         self.assertEqual("POST", response.headers["Allow"])
+
+    async def test_browser_is_sent_to_the_docs(self) -> None:
+        # GIVEN
+        browser = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+
+        # WHEN
+        responses = [await self.client.get("/mcp", headers=browser), await self.client.get("/", headers=browser)]
+
+        # THEN
+        self.assertEqual([302, 302], [response.status_code for response in responses])
+        self.assertEqual({DOCS_URL}, {response.headers["Location"] for response in responses})
 
     async def test_helium_unreachable_is_not_a_challenge(self) -> None:
         # GIVEN

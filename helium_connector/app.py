@@ -7,12 +7,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from helium_connector import __version__
-from helium_connector.server import create_server
+from helium_connector.server import DOCS_URL, create_server
 from helium_connector.settings import MCP_PATH, SCOPES, Settings
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
     """
     Build the connector's ASGI app: the MCP endpoint, its OAuth protected resource metadata, and a status check.
-    It's stateless and answers in JSON, so any instance can serve any request.
+    It's stateless and answers in JSON, so any instance can serve any request. A browser opening the connector's URL is
+    sent to its documentation.
 
     :param settings: The connector's configuration.
     :param transport: How requests reach Helium (the network unless given).
@@ -55,6 +56,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                                               scopes_supported=list(SCOPES)),
             Route(MCP_PATH, _no_event_stream, methods=["GET"]),
         ]
+    app.router.routes.append(Route("/", _docs, methods=["GET"]))
     app.router.routes.append(Route("/status", _status, methods=["GET"]))
     app.add_middleware(ScopeChallengeMiddleware)
     if settings.origin_secret:
@@ -123,7 +125,18 @@ class MuppetsMiddleware:
 
 
 async def _no_event_stream(request: Request) -> Response:
+    if _from_a_browser(request):
+        return await _docs(request)
     return Response(status_code=405, headers={"Allow": "POST"})
+
+
+async def _docs(request: Request) -> Response:
+    return RedirectResponse(DOCS_URL, status_code=302)
+
+
+def _from_a_browser(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept and "text/event-stream" not in accept
 
 
 async def _status(request: Request) -> JSONResponse:

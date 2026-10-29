@@ -23,6 +23,7 @@
 # Helium Connector
 
 [![Build](https://img.shields.io/github/actions/workflow/status/HeliumEdu/connector/build.yml)](https://github.com/HeliumEdu/connector/actions/workflows/build.yml)
+[![Code Quality](https://app.codacy.com/project/badge/Grade/111cb4a95255430da06806783ae2c16e)](https://app.codacy.com/gh/HeliumEdu/connector/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 ![GitHub License](https://img.shields.io/github/license/heliumedu/connector)
 
 The Helium `connector` is a remote [MCP](https://modelcontextprotocol.io) server that connects AI assistants to a
