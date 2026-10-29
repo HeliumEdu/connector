@@ -37,7 +37,6 @@ dev = [
 ]
 
 [project.urls]
-Changelog = "https://github.com/HeliumEdu/connector/blob/main/CHANGELOG.md"
 Documentation = "https://github.com/HeliumEdu/connector#readme"
 "Source Code" = "https://github.com/HeliumEdu/connector"
 
