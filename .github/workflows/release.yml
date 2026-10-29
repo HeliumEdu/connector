@@ -1,51 +1,71 @@
 name: Release
 
-run-name: Release ${{ inputs.version }}
+run-name: Release `${{ inputs.bump_type }}`
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to release (must match helium_connector/__init__.py)'
+      bump_type:
+        description: 'Version bump type'
         required: true
-        type: string
-      deploy_after_release:
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      trigger_deploy_after_release:
         description: 'Deploy to prod after release'
         required: true
         type: boolean
         default: true
+      consolidate_history:
+        description: 'Reset develop to main after release (force-push).'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   issues: none
   pull-requests: none
 
+concurrency:
+  group: helium-connector-release
+
 jobs:
+  prereq:
+    uses: HeliumEdu/.github/.github/workflows/release-prereq.yml@main
+    with:
+      bump_type: ${{ inputs.bump_type }}
+      version_format: python
+      version_file: helium_connector/__init__.py
+      repo_slug: HeliumEdu/connector
+    secrets:
+      bot_app_id: ${{ secrets.HELIUM_BOT_APP_ID }}
+      bot_private_key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
+
   release:
     name: Release
+    needs: [prereq]
 
     env:
       FORCE_COLOR: 1
       PYTHONUNBUFFERED: 1
       PYTHONDONTWRITEBYTECODE: 1
-      VERSION: ${{ inputs.version }}
+      VERSION: ${{ needs.prereq.outputs.version }}
+      COMMIT_SHA: ${{ needs.prereq.outputs.squash_commit_sha }}
 
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prereq.outputs.squash_commit_sha }}
       - name: Set up Python 3.13
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Validate version
-        run: |
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Version must be MAJOR.MINOR.PATCH" && exit 1
-          fi
-          if ! grep -q "__version__ = \"$VERSION\"" helium_connector/__init__.py; then
-            echo "Version not bumped in helium_connector/__init__.py" && exit 1
-          fi
       - name: Install dependencies
         run: make install
       - name: Check and test
@@ -59,7 +79,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$VERSION" "build/connector-$VERSION.zip" \
-            --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
+            --target "$COMMIT_SHA" --title "$VERSION" --generate-notes
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -74,12 +94,12 @@ jobs:
 
   deploy:
     name: Deploy to prod
-    needs: release
-    if: inputs.deploy_after_release
+    needs: [prereq, release]
+    if: "!cancelled() && inputs.trigger_deploy_after_release && needs.release.result == 'success'"
 
     env:
       TERRAFORM_API_TOKEN: ${{ secrets.TERRAFORM_API_TOKEN }}
-      VERSION: ${{ inputs.version }}
+      VERSION: ${{ needs.prereq.outputs.version }}
 
     runs-on: ubuntu-latest
 
@@ -92,6 +112,8 @@ jobs:
           private-key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
           owner: HeliumEdu
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prereq.outputs.squash_commit_sha }}
       - name: Checkout infra repository
         uses: actions/checkout@v6
         with:
@@ -124,3 +146,14 @@ jobs:
         run: pip install requests==2.34.2
       - name: Run deployment script
         run: ./bin/deploy-release.py "$VERSION" --deploy-repo ./deploy
+
+  cleanup:
+    needs: [prereq, release, deploy]
+    if: always() && needs.prereq.result == 'success'
+    uses: HeliumEdu/.github/.github/workflows/release-cleanup.yml@main
+    with:
+      consolidate_history: ${{ inputs.consolidate_history && needs.release.result == 'success' }}
+      squash_boundary_sha: ${{ needs.prereq.outputs.squash_boundary_sha }}
+    secrets:
+      bot_app_id: ${{ secrets.HELIUM_BOT_APP_ID }}
+      bot_private_key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
