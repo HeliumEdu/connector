@@ -34,7 +34,8 @@ from heliumedu.exception import (
 logger = logging.getLogger(__name__)
 
 #: Where the connector's documentation is.
-DOCS_URL: Final = "https://www.heliumedu.com/support/"
+DOCS_URL: Final = ("https://www.heliumedu.com/support/getting-started/where-to-start-with-helium/"
+                   "#import-a-whole-syllabus-with-ai")
 #: How many days a read covers when no window is given.
 DEFAULT_WINDOW_DAYS: Final = 7
 #: The longest window a read covers, in days.
