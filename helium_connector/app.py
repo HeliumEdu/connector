@@ -1,5 +1,8 @@
 import hmac
 import logging
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Final
 
 import httpx
 from mcp.server.auth.routes import create_protected_resource_routes
@@ -7,7 +10,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -17,10 +20,14 @@ from helium_connector.settings import MCP_PATH, SCOPES, Settings
 
 logger = logging.getLogger(__name__)
 
+#: Files served as plain text at ``/.well-known/<name>``, such as a domain verification token.
+WELL_KNOWN_DIR: Final = Path(__file__).resolve().parent / "well_known"
+
 
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
     """
-    Build the connector's ASGI app: the MCP endpoint, its OAuth protected resource metadata, and a status check.
+    Build the connector's ASGI app: the MCP endpoint, its OAuth protected resource metadata, a status check, and the
+    files in ``well_known/``.
     It's stateless and answers in JSON, so any instance can serve any request. A browser opening the connector's URL is
     sent to its documentation.
 
@@ -58,6 +65,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         ]
     app.router.routes.append(Route("/", _docs, methods=["GET"]))
     app.router.routes.append(Route("/status", _status, methods=["GET"]))
+    app.router.routes.extend(_well_known_routes(WELL_KNOWN_DIR))
     app.add_middleware(ScopeChallengeMiddleware)
     if settings.origin_secret:
         app.add_middleware(OriginSecretMiddleware, secret=settings.origin_secret)
@@ -137,6 +145,18 @@ async def _docs(request: Request) -> Response:
 def _from_a_browser(request: Request) -> bool:
     accept = request.headers.get("accept", "")
     return "text/html" in accept and "text/event-stream" not in accept
+
+
+def _well_known_routes(directory: Path) -> list[Route]:
+    files = sorted(path for path in directory.glob("*") if path.is_file() and not path.name.startswith("."))
+    return [Route(f"/.well-known/{path.name}", _answers(path.read_text().strip()), methods=["GET"]) for path in files]
+
+
+def _answers(text: str) -> Callable[[Request], Awaitable[Response]]:
+    async def answer(request: Request) -> Response:
+        return PlainTextResponse(text)
+
+    return answer
 
 
 async def _status(request: Request) -> JSONResponse:

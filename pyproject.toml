@@ -12,7 +12,7 @@ dependencies = [
     "httpx>=0.28,<1",
     "mangum>=0.22,<1",
     "mcp>=2.3,<3",
-    "python-dateutil>=2.9,<3",
+    "python-dateutil>=2.9,<4",
     "sentry-sdk>=2.73,<3",
 ]
 classifiers = [
@@ -45,7 +45,7 @@ packages = ["heliumedu", "helium_connector"]
 
 [tool.setuptools.package-data]
 heliumedu = ["py.typed"]
-helium_connector = ["py.typed"]
+helium_connector = ["py.typed", "well_known/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "helium_connector.__version__" }

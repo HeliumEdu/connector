@@ -72,13 +72,14 @@ jobs:
         run: make check test
       - name: Package
         run: |
-          make package
+          make package package-plugin
           mv build/connector.zip "build/connector-$VERSION.zip"
+          mv build/helium-plugin.zip "build/helium-plugin-$VERSION.zip"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$VERSION" "build/connector-$VERSION.zip" \
+          gh release create "$VERSION" "build/connector-$VERSION.zip" "build/helium-plugin-$VERSION.zip" \
             --target "$COMMIT_SHA" --title "$VERSION" --generate-notes
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6

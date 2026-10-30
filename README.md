@@ -120,6 +120,19 @@ syllabus, asking the student about anything the syllabi leave unclear, and previ
 - Requests share the user's Helium API rate limit (130 requests per minute). Past it, the error says how many seconds
   to wait.
 
+### Plugin Package
+
+`plugin/` is the connector as an [Agent Plugins](https://agent-plugins.org) package: `plugin.json`, and `mcp.json`
+pointing at `https://mcp.heliumedu.com/mcp`. ChatGPT's listing, review cases, and release notes live under
+`extensions.com.openai`. Each release attaches it as `helium-plugin-<version>.zip`, with `version` set to the
+connector's; to build it locally, execute:
+
+```sh
+make package-plugin
+```
+
+Upload a new ZIP to the plugin directory only when `plugin/` changes; tool changes reach listings from the server.
+
 ## Documentation
 
 Helium's API documentation is available at [api.heliumedu.com/docs](https://api.heliumedu.com/docs/), and help with
