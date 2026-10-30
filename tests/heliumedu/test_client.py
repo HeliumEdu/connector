@@ -154,7 +154,8 @@ class TestListing(HeliumClientTestCase):
         client = self.given_client()
 
         # WHEN
-        await client.list_homework(date(2026, 9, 1), date(2026, 9, 8), course_ids=[3, 4], completed=False)
+        await client.list_homework(date(2026, 9, 1), date(2026, 9, 8), course_ids=[3, 4], completed=False,
+                                   category_ids=[7, 8])
 
         # THEN
         params = self.helium.requested("GET", "/planner/homework/")[0].url.params
@@ -163,6 +164,7 @@ class TestListing(HeliumClientTestCase):
         self.assertEqual("3,4", params["course__id"])
         self.assertEqual("false", params["completed"])
         self.assertEqual("start", params["ordering"])
+        self.assertEqual("7,8", params["category__id"])
         self.assertNotIn("overdue", params)
         self.assertNotIn("search", params)
 
@@ -214,6 +216,31 @@ class TestListing(HeliumClientTestCase):
         # THEN
         params = self.helium.requested("GET", "/planner/notes/")[0].url.params
         self.assertEqual({"include_content": "true", "search": "mitosis", "homework": "9"}, dict(params))
+
+    async def test_notes_filters(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/notes/", 200, [])
+        client = self.given_client()
+
+        # WHEN
+        await client.list_notes(course_id=3, event_id=4, resource_id=5)
+
+        # THEN
+        params = self.helium.requested("GET", "/planner/notes/")[0].url.params
+        self.assertEqual({"include_content": "true", "course": "3", "event": "4", "resource": "5"}, dict(params))
+
+    async def test_needed_grade(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/needed/", 200, {"state": "achievable", "needed_grade": 77.5})
+        client = self.given_client()
+
+        # WHEN
+        needed = await client.get_needed_grade(10, 2, 85)
+
+        # THEN
+        self.assertEqual({"state": "achievable", "needed_grade": 77.5}, needed)
+        params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
+        self.assertEqual({"course": "10", "target": "2", "desired_grade": "85"}, dict(params))
 
     async def test_notes_page_past_the_last(self) -> None:
         # GIVEN

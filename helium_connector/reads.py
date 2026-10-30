@@ -1,5 +1,7 @@
 import json
+import math
 from datetime import date, datetime, time, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
@@ -78,11 +80,13 @@ def shape_assignments(homework: list[dict[str, Any]],
         "class_id": item.get("course"),
         "term": term_titles.get(courses_by_id.get(item.get("course"), {}).get("course_group")),
         "category": category_titles.get(item.get("category")),
-        "due": _local_date(item["start"], time_zone) if item.get("all_day") else _local(item["start"], time_zone),
+        "due": (isoparse(item["start"]).astimezone(time_zone).date().isoformat() if item.get("all_day")
+                else _local(item["start"], time_zone)),
         "end": _local(item["end"], time_zone) if item.get("show_end_time") and not item.get("all_day") else None,
         "all_day": bool(item.get("all_day")),
         "completed": bool(item.get("completed")),
-        "grade": _homework_grade(item.get("current_grade")),
+        "grade": (None if not item.get("current_grade") or str(item["current_grade"]).startswith(f"{NO_GRADE}/")
+                  else str(item["current_grade"])),
         "priority": item.get("priority"),
     } for item in homework]
 
@@ -125,6 +129,7 @@ def expand_events(events: list[dict[str, Any]], start: date, end: date, time_zon
                     "end": None if event.get("all_day") else (occurrence + duration).isoformat(),
                     "all_day": bool(event.get("all_day")),
                     "location": event.get("location") or None,
+                    "priority": event.get("priority"),
                     "repeats": bool(event.get("recurrence_rule")),
                 })
     return sorted(occurrences, key=lambda occurrence: occurrence["start"])
@@ -133,31 +138,60 @@ def expand_events(events: list[dict[str, Any]], start: date, end: date, time_zon
 def shape_grades(grades: dict[str, Any], term_ids: set[int] | None = None) -> list[dict[str, Any]]:
     """
     Trim Helium's grade tree to terms, classes, and categories (grades as percentages, ``None`` when nothing is
-    graded yet).
+    graded yet; trends as the app's arrows: up, down, or steady).
 
     :param grades: ``GET /planner/grades/``.
     :param term_ids: Only these terms, if given.
     :return: The terms.
     """
     return [{
+        "id": group["id"],
         "title": group["title"],
         "overall_grade": _grade(group.get("overall_grade")),
+        "trend": _trend(group.get("trend")),
         "classes": [{
+            "id": course["id"],
             "title": course["title"],
             "overall_grade": _grade(course.get("overall_grade")),
+            "trend": _trend(course.get("trend")),
             "weighted": bool(course.get("has_weighted_grading")),
             "graded_assignments": course.get("num_homework_graded"),
             "assignments": course.get("num_homework"),
             "points_earned": course.get("points_earned"),
             "points_possible": course.get("points_possible"),
             "categories": [{
+                "id": category["id"],
                 "title": category["title"],
                 "weight": category.get("weight"),
                 "average_grade": _grade(category.get("overall_grade")),
+                "trend": _trend(category.get("trend")),
                 "graded_assignments": category.get("num_homework_graded"),
+                "ungraded_assignments": category.get("num_homework", 0) - category.get("num_homework_graded", 0),
             } for category in course.get("categories", [])],
         } for course in group.get("courses", [])],
     } for group in grades.get("course_groups", []) if term_ids is None or group["id"] in term_ids]
+
+
+def shape_needed_grade(needed: dict[str, Any]) -> dict[str, Any]:
+    """
+    Trim Helium's "What Do I Need?" result, rounded as the app shows it.
+
+    :param needed: ``GET /planner/grades/needed/``.
+    :return: The result.
+    """
+    assignment = needed.get("assignment")
+    category = needed.get("category")
+    return {
+        "outcome": needed["state"],
+        "needed_grade": _as_shown(needed["needed_grade"]),
+        "category": category["title"] if category else None,
+        "assignment": {
+            "title": assignment["title"],
+            "points_possible": assignment["points_possible"],
+            "needed_points": _as_shown(assignment["needed_points"]),
+        } if assignment else None,
+        "total_weight": needed.get("total_weight_accounted_for"),
+    }
 
 
 def shape_resources(resource_groups: list[dict[str, Any]],
@@ -192,21 +226,27 @@ def shape_resources(resource_groups: list[dict[str, Any]],
     return groups
 
 
-def shape_notes(notes: list[dict[str, Any]], time_zone: ZoneInfo, limit: int) -> list[dict[str, Any]]:
+def shape_notes(notes: list[dict[str, Any]],
+                courses: list[dict[str, Any]],
+                time_zone: ZoneInfo,
+                limit: int) -> list[dict[str, Any]]:
     """
-    Trim notes to their title, what they're linked to, and plain text.
+    Trim notes to their title, what they're linked to (and its class), and plain text.
 
     :param notes: ``GET /planner/notes/?include_content=true``.
+    :param courses: ``GET /planner/courses/``, to name each note's class.
     :param time_zone: The student's time zone.
     :param limit: The most notes to return, most recently updated first.
     :return: The notes.
     """
     recent = sorted(notes, key=lambda note: note.get("updated_at") or "", reverse=True)[:limit]
+    course_titles = {course["id"]: course["title"] for course in courses}
     return [{
         "id": note["id"],
         "title": note.get("title") or None,
         "linked_to": note.get("linked_entity_title"),
         "linked_type": note.get("linked_entity_type"),
+        "class": course_titles.get(note.get("course_id")),
         "updated": _local(note["updated_at"], time_zone) if note.get("updated_at") else None,
         "text": delta_to_text(note.get("content"))[:MAX_NOTE_CHARS],
     } for note in recent]
@@ -246,8 +286,11 @@ def _shape_class(course: dict[str, Any],
         "no_class_dates": _no_class_dates(course.get("exceptions")),
         "current_grade": _grade(course.get("current_grade")),
         "meets": [_describe_schedule(schedule) for schedule in schedules if schedule.get("course") == course["id"]],
-        "grading": _grading(course_categories),
-        "categories": [{"title": category["title"], "weight": category.get("weight")}
+        "grading": (None if not course_categories
+                    else "points-based" if all(float(category.get("weight") or 0) == 0
+                                               for category in course_categories)
+                    else "weighted"),
+        "categories": [{"id": category["id"], "title": category["title"], "weight": category.get("weight")}
                        for category in course_categories],
     }
 
@@ -258,9 +301,15 @@ def _describe_schedule(schedule: dict[str, Any]) -> str:
         anchor = schedule.get("anchor_date")
         cycle = (f"A/B Day (A Day on {anchor})" if cycle_length == 2
                  else f"{cycle_length}-day cycle (Day 1 on {anchor})")
-        slots = "; ".join(f"{_cycle_days(cycle_length, slot['indices'])} {slot['start_time'][:5]}-"
-                          f"{slot['end_time'][:5]}" for slot in schedule.get("cycle_slots") or [])
-        description = f"{cycle}: {slots}"
+        slots = []
+        for slot in schedule.get("cycle_slots") or []:
+            indices = slot["indices"]
+            if cycle_length == 2:
+                days = "A and B Days" if len(set(indices)) == 2 else ("A Day" if indices[0] == 1 else "B Day")
+            else:
+                days = describe_numbered_days(indices)
+            slots.append(f"{days} {slot['start_time'][:5]}-{slot['end_time'][:5]}")
+        description = f"{cycle}: {'; '.join(slots)}"
     else:
         by_time: dict[str, list[str]] = {}
         for index, day in enumerate(WEEKDAYS):
@@ -282,21 +331,9 @@ def _describe_schedule(schedule: dict[str, Any]) -> str:
     return description
 
 
-def _grading(categories: list[dict[str, Any]]) -> str | None:
-    if not categories:
-        return None
-    return "points-based" if all(float(category.get("weight") or 0) == 0 for category in categories) else "weighted"
-
-
 def _no_class_dates(exceptions: str | None) -> list[str]:
     return [date(int(day[:4]), int(day[4:6]), int(day[6:])).isoformat()
             for day in (exceptions or "").split(",") if day.strip()]
-
-
-def _cycle_days(cycle_length: int, indices: list[int]) -> str:
-    if cycle_length == 2:
-        return "A and B Days" if len(set(indices)) == 2 else ("A Day" if indices[0] == 1 else "B Day")
-    return describe_numbered_days(indices)
 
 
 def describe_numbered_days(days: list[int]) -> str:
@@ -330,16 +367,25 @@ def _local(value: str, time_zone: ZoneInfo) -> str:
     return isoparse(value).astimezone(time_zone).isoformat()
 
 
-def _local_date(value: str, time_zone: ZoneInfo) -> str:
-    return isoparse(value).astimezone(time_zone).date().isoformat()
-
-
 def _label(labels: tuple[str, ...], value: Any) -> str | None:
     return labels[value] if isinstance(value, int) and 0 <= value < len(labels) else None
 
 
-def _homework_grade(value: Any) -> str | None:
-    return None if not value or str(value).startswith(f"{NO_GRADE}/") else str(value)
+def _as_shown(value: float) -> float:
+    """
+    Round to one decimal as the app displays it: ``intl``'s ``NumberFormat`` rounds the fraction alone, in tenths,
+    with a tie away from zero.
+    """
+    whole = math.floor(abs(value))
+    tenths = Decimal((abs(value) - whole) * 10).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    return math.copysign(whole + float(tenths) / 10, value)
+
+
+def _trend(value: Any) -> str | None:
+    if value is None:
+        return None
+    trend = float(value)
+    return "up" if trend > 0 else "down" if trend < 0 else "steady"
 
 
 def _grade(value: Any) -> float | None:

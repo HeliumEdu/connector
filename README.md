@@ -75,7 +75,7 @@ tools:
 | `list_notes`             | Read   | Notes, optionally matching text or for one assignment, as plain text                  |
 | `list_classes`           | Read   | Classes by term, with meeting times, teacher, credits, and grading categories         |
 | `list_resources`         | Read   | Resources by resource group, with status, price, and the classes each is for          |
-| `get_grades`             | Read   | Grades, per class and category                                                        |
+| `get_grades`             | Read   | Grades and trends, per class and category, or the score a class needs for a grade     |
 
 #### Permissions
 
@@ -98,10 +98,13 @@ refuses a new term whose title and dates are already in Helium, or a class alrea
 - `preview_import_ics`, `import_ics`: `ics` (the `.ics` file's text), `class_id` (unset imports the entries as
   events). Helium reads the calendar: repeating entries are expanded and cancelled ones left out.
 - `list_assignments`: `start_date`, `end_date`, `class_id`, `status` (`all`, `incomplete`, `completed`, `overdue`),
-  `query`, `limit` (1-100, default 25), `page`.
+  `category_id`, `query`, `limit` (1-100, default 25), `page`.
 - `list_events`: `start_date`, `end_date`, `query`, `limit` (1-100, default 25), `page`.
-- `list_notes`: `query`, `assignment_id`, `limit` (1-10, default 5), `page`.
-- `list_classes`, `get_grades`: `include_past_terms`.
+- `list_notes`: `query`, `class_id`, `assignment_id`, `event_id`, `resource_id`, `limit` (1-10, default 5), `page`.
+- `list_classes`: `include_past_terms`.
+- `get_grades`: `include_past_terms`; or `target_grade` with `class_id` and `target_id` (in a weighted class, a category
+  down to its last ungraded assignment; otherwise, an ungraded assignment) for the score Helium calculates the class
+  needs.
 - `list_resources`: `class_id`.
 
 Each tool's JSON Schema, served by the connector, describes every field. Dates and times are local to the time zone
@@ -109,7 +112,8 @@ set in the user's Helium account. A window covers at most 366 days. Lists return
 `total` and `has_more`.
 
 For assistants that offer prompts, the `import_syllabi` prompt walks through a term's import: gathering every
-syllabus, asking the student about anything the syllabi leave unclear, and previewing before importing.
+syllabus, asking the student about anything the syllabi leave unclear, and previewing before importing. The
+`plan_study_time` prompt suggests what to work on with the time the student has, from their planner and grades.
 
 #### Errors and Limits
 

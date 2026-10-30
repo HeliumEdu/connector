@@ -19,13 +19,14 @@ from helium_connector.models import ExistingTerm, ImportPlan, TermPlan
 from helium_connector.planning import build_import, describe_import, existing_term, explain_platform_errors, \
     summarize, to_confirm, validate, warnings
 from helium_connector.reads import due_between, expand_events, shape_assignments, shape_classes, shape_grades, \
-    shape_notes, shape_resources
+    shape_needed_grade, shape_notes, shape_resources
 from helium_connector.settings import Settings
 from heliumedu.client import HeliumClient
 from heliumedu.exception import (
     HeliumAuthError,
     HeliumConnectionError,
     HeliumError,
+    HeliumNotFoundError,
     HeliumPermissionError,
     HeliumRateLimitedError,
     HeliumValidationError,
@@ -79,7 +80,13 @@ INSTRUCTIONS: Final = (
     "preview_import_term and preview_import_ics check an import with Helium without saving anything. "
     "preview_import_term returns problems to fix, warnings, what the plan leaves unset (to_confirm), and a summary to "
     "confirm with the student before importing. Dates and times in a plan are local: Helium places them in "
-    "the time zone set in the student's Helium account, which the previews return."
+    "the time zone set in the student's Helium account, which the previews return.\n\n"
+    "When the student asks what to work on or study, read before suggesting: overdue and incomplete assignments, "
+    "what's due soon, today's meeting times and events (for the time they have free), and grades with their trends. "
+    "Suggest a few things that fit their time: overdue work and what's due soonest first, then heavily weighted work "
+    "and classes whose grade is down, counting the priority they've set. Let them choose. For the score needed on "
+    "remaining work, use get_grades with target_grade rather than calculating it. Help them plan and study, but "
+    "don't do graded work for them."
 )
 #: The guided syllabus import, for clients that offer prompts.
 SYLLABUS_PROMPT: Final = """Set up my term in Helium from my syllabi.
@@ -106,6 +113,18 @@ to_confirm and warnings.
 for this term. Import only after I say I'm ready.
 5. After the classes are in Helium, import each calendar file into its class with import_ics (check it first with \
 preview_import_ics), using the class ids the import returned."""
+#: The guided study session, for clients that offer prompts.
+STUDY_PROMPT: Final = """Help me decide what to work on with the time I have.
+
+1. Ask how much time I have, if I haven't said.
+2. Read my planner: overdue and incomplete assignments, what's due in the next few days, today's classes and events, \
+and my grades and their trends.
+3. Suggest up to three things that fit my time: overdue work and what's due soonest first, then heavily weighted work \
+and classes whose grade is down. Count the priority I've set on assignments, and say why each one made the list.
+4. For an exam coming up, suggest spreading review over the days before it, and quizzing myself from that class's \
+notes (list_notes with its class_id).
+5. If I ask what I need on remaining work, use get_grades with target_grade; don't calculate it.
+6. Let me choose. Help me plan and study, but don't do graded work for me."""
 
 Status = Literal["all", "incomplete", "completed", "overdue"]
 
@@ -143,9 +162,25 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         try:
             user = await verifier.user_for(token.token)
             async with httpx.AsyncClient(transport=transport) as session:
-                yield HeliumClient(session, token.token, settings.api_url, agent=AGENT), _time_zone(user)
+                time_zone = ZoneInfo((user.get("settings") or {}).get("time_zone") or "UTC")
+                yield HeliumClient(session, token.token, settings.api_url, agent=AGENT), time_zone
         except HeliumError as e:
             raise _tool_error(e) from e
+
+    async def needed_grade(target_grade: float, class_id: int | None, target_id: int | None) -> dict[str, Any]:
+        if class_id is None or target_id is None:
+            return {"problems": ["target_grade needs class_id and target_id."]}
+        async with helium() as (client, _):
+            try:
+                needed = await client.get_needed_grade(class_id, target_id, target_grade)
+            except HeliumValidationError as e:
+                errors = (e.meta or {}).get("errors")
+                messages = errors.values() if isinstance(errors, dict) else [errors]
+                return {"problems": [str(message) for value in messages
+                                     for message in (value if isinstance(value, list) else [value])]}
+            except HeliumNotFoundError:
+                return {"problems": [f"Class {class_id} isn't in Helium. get_grades gives each class's id."]}
+        return {"class_id": class_id, "target_grade": target_grade, **shape_needed_grade(needed)}
 
     async def import_plan(plan: ImportPlan, *, dry_run: bool, allow_duplicates: bool) -> dict[str, Any]:
         outcome = "ready" if dry_run else "imported"
@@ -254,6 +289,12 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
     def import_syllabi() -> str:
         return SYLLABUS_PROMPT
 
+    @server.prompt(title="Plan study time",
+                   description="Decide what to work on or study with the time you have, from your planner and "
+                               "grades.")
+    def plan_study_time() -> str:
+        return STUDY_PROMPT
+
     @server.tool(title="List assignments",
                  description="List the user's assignments (homework, quizzes, exams, projects) due in a window, "
                              "with class, term, category, completion, and grade. Defaults to the next "
@@ -266,6 +307,9 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                                class_id: int | None = Field(default=None,
                                                             description="Only this class (an id from list_classes)."),
                                status: Status = Field(default="all"),
+                               category_id: int | None = Field(default=None,
+                                                               description="Only this category (an id from "
+                                                                           "list_classes)."),
                                query: str | None = Field(default=None,
                                                          description="Only assignments whose title, category, or "
                                                                      "class matches this text."),
@@ -280,7 +324,9 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
             homework = await client.list_homework(start - timedelta(days=1), end + timedelta(days=2),
                                                   course_ids=[class_id] if class_id is not None else None,
                                                   completed={"incomplete": False, "completed": True}.get(status),
-                                                  overdue=True if status == "overdue" else None, search=query)
+                                                  overdue=True if status == "overdue" else None,
+                                                  category_ids=[category_id] if category_id is not None else None,
+                                                  search=query)
             categories = await client.list_categories()
         assignments = due_between(shape_assignments(homework, courses, categories, groups, time_zone), start, end)
         return {"start_date": start.isoformat(), "end_date": end.isoformat(),
@@ -307,22 +353,34 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                 **_paged("events", expand_events(events, start, end, time_zone), limit, page)}
 
     @server.tool(title="List notes",
-                 description="List the user's notes as plain text: all of them, those matching a query, or the "
-                             "note on one assignment. Returns limit at a time, with total and has_more; pass page "
-                             "for the next.",
+                 description="List the user's notes as plain text: all of them, those matching a query, a "
+                             "class's, or the note on one assignment, event, or resource. Returns limit at a time, "
+                             "with total and has_more; pass page for the next.",
                  annotations=_reads("List notes"))
     async def list_notes(query: str | None = Field(default=None,
                                                    description="Only notes whose title, text, or linked item "
                                                                "matches this text."),
+                         class_id: int | None = Field(default=None,
+                                                      description="Only notes on this class's assignments or "
+                                                                  "resources (an id from list_classes)."),
                          assignment_id: int | None = Field(default=None,
                                                            description="Only the note on this assignment (an id "
                                                                        "from list_assignments)."),
+                         event_id: int | None = Field(default=None,
+                                                      description="Only the note on this event (an id from "
+                                                                  "list_events)."),
+                         resource_id: int | None = Field(default=None,
+                                                         description="Only the note on this resource (an id from "
+                                                                     "list_resources)."),
                          limit: int = Field(default=5, ge=1, le=10),
                          page: int = Field(default=1, ge=1)) -> dict[str, Any]:
         async with helium() as (client, time_zone):
-            notes = await client.list_notes_page(query, homework_id=assignment_id, page=page, page_size=limit)
+            notes = await client.list_notes_page(query, homework_id=assignment_id, course_id=class_id,
+                                                 event_id=event_id, resource_id=resource_id, page=page,
+                                                 page_size=limit)
+            courses = await client.list_courses()
         return {"total": notes.total, "page": page, "has_more": notes.has_more,
-                "notes": shape_notes(notes.items, time_zone, limit)}
+                "notes": shape_notes(notes.items, courses, time_zone, limit)}
 
     @server.tool(title="List classes",
                  description="List the user's classes by term, with room, teacher, credits, current grade, meeting "
@@ -352,12 +410,26 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         return {"resource_groups": shape_resources(groups, resources, courses, class_id)}
 
     @server.tool(title="Get grades",
-                 description="Get the user's grades: each term's classes, with overall grade, weighted or "
-                             "points-based grading, and each category's weight and average.",
+                 description="Get the user's grades: each term's classes, with overall grade, trend (up, down, "
+                             "or steady), weighted or points-based grading, and each category's weight, average, "
+                             "and ungraded assignments. With target_grade, class_id, and target_id, returns instead "
+                             "the score Helium calculates the class needs to reach target_grade.",
                  annotations=_reads("Get grades"))
     async def get_grades(include_past_terms: bool = Field(default=False,
-                                                          description="Include terms that have ended.")
+                                                          description="Include terms that have ended."),
+                         target_grade: float | None = Field(default=None,
+                                                            description="The overall class grade wanted (0-100)."),
+                         class_id: int | None = Field(default=None,
+                                                      description="With target_grade: the class (an id from "
+                                                                  "get_grades)."),
+                         target_id: int | None = Field(default=None,
+                                                       description="With target_grade: in a weighted class, a "
+                                                                   "category down to its last ungraded "
+                                                                   "assignment; otherwise, an ungraded assignment "
+                                                                   "(an id from list_assignments).")
                          ) -> dict[str, Any]:
+        if target_grade is not None:
+            return await needed_grade(target_grade, class_id, target_id)
         async with helium() as (client, time_zone):
             grades = await client.get_grades()
             groups = await client.list_course_groups()
@@ -394,7 +466,11 @@ class HeliumServer(MCPServer[Any]):
         except ToolError as e:
             if isinstance(e, UnexpectedToolError) or not isinstance(e.__cause__, ValidationError):
                 raise
-            raise ToolError(_explain_input(e.__cause__)) from e.__cause__
+            cause = e.__cause__
+            problems = [f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}"
+                        for detail in cause.errors()]
+            raise ToolError("The input doesn't match the tool's schema:\n"
+                            + "\n".join(f"- {problem}" for problem in problems)) from cause
 
 
 def _drop_field_titles(schema: Any) -> None:
@@ -411,11 +487,6 @@ def _drop_field_titles(schema: Any) -> None:
     elif isinstance(schema, list):
         for value in schema:
             _drop_field_titles(value)
-
-
-def _explain_input(error: ValidationError) -> str:
-    problems = [f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}" for detail in error.errors()]
-    return "The input doesn't match the tool's schema:\n" + "\n".join(f"- {problem}" for problem in problems)
 
 
 def _reads(title: str) -> ToolAnnotations:
@@ -470,10 +541,6 @@ def _tool_error(e: HeliumError) -> ToolError:
         logger.warning(f"Helium unreachable: {e}")
         return ToolError("Helium couldn't be reached. Try again in a minute.")
     return ToolError(f"Helium couldn't do that: {e}")
-
-
-def _time_zone(user: dict[str, Any]) -> ZoneInfo:
-    return ZoneInfo((user.get("settings") or {}).get("time_zone") or "UTC")
 
 
 def _today(time_zone: ZoneInfo) -> date:

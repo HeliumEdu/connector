@@ -102,7 +102,8 @@ def warnings(plan: TermPlan) -> list[str]:
     for event in plan.events:
         last = event.repeat.until if event.repeat else event.start_date
         if event.start_date < course_group.start_date or last > course_group.end_date:
-            notes.append(f"Event '{event.title}' ({_describe_event_dates(event)}) falls outside the term "
+            dates = f"on {event.start_date}" if event.repeat is None else f"{event.start_date} to {event.repeat.until}"
+            notes.append(f"Event '{event.title}' ({dates}) falls outside the term "
                          f"({course_group.start_date} to {course_group.end_date}).")
     return notes
 
@@ -158,7 +159,7 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
     courses = []
     for course in plan.courses:
         dues = sorted(homework.due_date for homework in course.homework)
-        points_based = _is_points_based(course)
+        points_based = bool(course.categories) and all(category.weight == 0 for category in course.categories)
         courses.append({
             "title": course.title,
             "meets": [_describe_schedule(schedule) for schedule in course.schedules],
@@ -296,7 +297,7 @@ def occurrences(event: Event, skip: Iterable[date]) -> Iterator[date]:
     skipped = set(skip)
     day = event.start_date
     while day <= event.repeat.until:
-        if _weekday(day) in days and day not in skipped:
+        if (day.weekday() + 1) % 7 in days and day not in skipped:
             yield day
         day += timedelta(days=1)
 
@@ -538,15 +539,6 @@ def _timing(day: date, start: time | None, end: time | None, time_zone: ZoneInfo
     return {"all_day": False, "show_end_time": end is not None, "start": begins.isoformat(), "end": ends.isoformat()}
 
 
-def _weekday(day: date) -> int:
-    return (day.weekday() + 1) % 7
-
-
-def _describe_meeting(meeting: Meeting) -> str:
-    days = "/".join(_SHORT_DAYS[day] for day in meeting.days)
-    return f"{days} {meeting.start_time:%H:%M}-{meeting.end_time:%H:%M}"
-
-
 def _schedule_label(schedule: Schedule) -> str:
     if isinstance(schedule, DayCycleSchedule):
         return "A/B Day schedule" if schedule.cycle_length == 2 else f"{schedule.cycle_length}-day cycle schedule"
@@ -563,7 +555,8 @@ def _describe_schedule(schedule: Schedule) -> str:
                           f"{slot.start_time:%H:%M}-{slot.end_time:%H:%M}" for slot in schedule.slots)
         description = f"{cycle}: {slots}"
     else:
-        meetings = "; ".join(_describe_meeting(meeting) for meeting in schedule.meetings)
+        meetings = "; ".join(f"{'/'.join(_SHORT_DAYS[day] for day in meeting.days)} "
+                             f"{meeting.start_time:%H:%M}-{meeting.end_time:%H:%M}" for meeting in schedule.meetings)
         if isinstance(schedule, WeekRotationSchedule):
             description = f"Week {schedule.week} (Week A includes {schedule.week_a_starts_on}): {meetings}"
         else:
@@ -586,16 +579,6 @@ def _repeated_classes(plan: TermPlan) -> list[str]:
         if count > 1:
             notes.append(f"Class '{course.title}' is listed {count} times; each becomes its own class in Helium.")
     return notes
-
-
-def _describe_event_dates(event: Event) -> str:
-    if event.repeat is None:
-        return f"on {event.start_date}"
-    return f"{event.start_date} to {event.repeat.until}"
-
-
-def _is_points_based(course: Course) -> bool:
-    return bool(course.categories) and all(category.weight == 0 for category in course.categories)
 
 
 def _describe_cycle_days(schedule: DayCycleSchedule, cycle_days: list[int]) -> str:

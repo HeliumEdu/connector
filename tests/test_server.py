@@ -477,10 +477,30 @@ class TestPrompts(McpTestCase):
         prompt = await self.rpc("prompts/get", {"name": "import_syllabi"})
 
         # THEN
-        self.assertEqual(["import_syllabi"], [prompt["name"] for prompt in listed.json()["result"]["prompts"]])
+        self.assertEqual(["import_syllabi", "plan_study_time"],
+                         [prompt["name"] for prompt in listed.json()["result"]["prompts"]])
         text = prompt.json()["result"]["messages"][0]["content"]["text"]
         self.assertIn("every class I'm taking this term", text)
         self.assertIn("to_confirm", text)
+
+    async def test_study_prompt_points_grade_questions_at_get_grades(self) -> None:
+        # WHEN
+        prompt = await self.rpc("prompts/get", {"name": "plan_study_time"})
+
+        # THEN
+        text = prompt.json()["result"]["messages"][0]["content"]["text"]
+        self.assertIn("how much time I have", text)
+        self.assertIn("get_grades with target_grade", text)
+        self.assertIn("don't do graded work for me", text)
+
+    async def test_instructions_point_grade_questions_at_get_grades(self) -> None:
+        # WHEN
+        response = await self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                 "clientInfo": {"name": "test", "version": "1"}})
+
+        # THEN
+        instructions = response.json()["result"]["instructions"]
+        self.assertIn("use get_grades with target_grade rather than calculating it", instructions)
 
 
 class TestReads(McpTestCase):
@@ -561,19 +581,86 @@ class TestReads(McpTestCase):
         self.assertTrue(result["isError"])
         self.assertIn("Reconnect Helium", result["content"][0]["text"])
 
+    async def test_needed_grade(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/needed/", 200, {
+            "state": "achievable", "needed_grade": 76.25, "weighted": True, "category": {"id": 3, "title": "Exams"},
+            "assignment": {"id": 9, "title": "Final", "points_possible": 100.0, "needed_points": 76.25},
+            "total_weight_accounted_for": None})
+
+        # WHEN
+        result = await self.call("get_grades", target_grade=85, class_id=10, target_id=3)
+
+        # THEN
+        content = result["structuredContent"]
+        self.assertEqual({"class_id": 10, "target_grade": 85, "outcome": "achievable", "needed_grade": 76.3,
+                          "category": "Exams",
+                          "assignment": {"title": "Final", "points_possible": 100.0, "needed_points": 76.3},
+                          "total_weight": None}, content)
+        params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
+        self.assertEqual({"course": "10", "target": "3", "desired_grade": "85.0"}, dict(params))
+        self.assertEqual([], self.helium.requested("GET", "/planner/grades/"))
+
+    async def test_needed_grade_explains_what_helium_refuses(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/needed/", 400,
+                           {"target": ["Choose a category with weight and exactly one assignment left."]})
+
+        # WHEN
+        result = await self.call("get_grades", target_grade=85, class_id=10, target_id=3)
+
+        # THEN
+        self.assertEqual({"problems": ["Choose a category with weight and exactly one assignment left."]},
+                         result["structuredContent"])
+
+    async def test_needed_grade_needs_a_class_and_target(self) -> None:
+        # WHEN
+        result = await self.call("get_grades", target_grade=85, class_id=10)
+
+        # THEN
+        self.assertEqual({"problems": ["target_grade needs class_id and target_id."]}, result["structuredContent"])
+        self.assertEqual([], self.helium.requested("GET", "/planner/grades/needed/"))
+
+    async def test_notes_for_a_class_event_or_resource(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/notes/", 200, {"count": 0, "next": None, "results": []})
+        self.helium.answer("GET", "/planner/courses/", 200, [])
+
+        # WHEN
+        await self.call("list_notes", class_id=10, event_id=4, resource_id=5)
+
+        # THEN
+        params = self.helium.requested("GET", "/planner/notes/")[0].url.params
+        self.assertEqual(("10", "4", "5"), (params["course"], params["event"], params["resource"]))
+
+    async def test_assignments_in_a_category(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/homework/", 200, [])
+        self.helium.answer("GET", "/planner/courses/", 200, [])
+        self.helium.answer("GET", "/planner/categories/", 200, [])
+
+        # WHEN
+        await self.call("list_assignments", category_id=7)
+
+        # THEN
+        self.assertEqual("7", self.helium.requested("GET", "/planner/homework/")[0].url.params["category__id"])
+
     async def test_notes(self) -> None:
         # GIVEN
         self.helium.answer("GET", "/planner/notes/", 200, {
             "count": 7, "next": "https://api.heliumedu.com/planner/notes/?page=3", "results": [
                 {"id": 1, "title": "Cells", "content": {"ops": [{"insert": "Mitosis\n"}]},
-                 "updated_at": "2026-09-05T15:00:00Z"}]})
+                 "updated_at": "2026-09-05T15:00:00Z", "course_id": 10}]})
+        self.helium.answer("GET", "/planner/courses/", 200, [{"id": 10, "title": "BIO 151"}])
 
         # WHEN
         result = await self.call("list_notes", query="mitosis", limit=3, page=2)
 
         # THEN
         content = result["structuredContent"]
-        self.assertEqual(("Mitosis", 7, True), (content["notes"][0]["text"], content["total"], content["has_more"]))
+        self.assertEqual(("Mitosis", "BIO 151", 7, True),
+                         (content["notes"][0]["text"], content["notes"][0]["class"], content["total"],
+                          content["has_more"]))
         params = self.helium.requested("GET", "/planner/notes/")[0].url.params
         self.assertEqual({"include_content": "true", "search": "mitosis", "ordering": "-updated_at", "page": "2",
                           "page_size": "3"}, dict(params))
