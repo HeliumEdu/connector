@@ -177,6 +177,7 @@ class HeliumClient:
                             course_ids: list[int] | None = None,
                             completed: bool | None = None,
                             overdue: bool | None = None,
+                            category_ids: list[int] | None = None,
                             search: str | None = None) -> list[dict[str, Any]]:
         """
         List the account's assignments, soonest first. A date (not a datetime) is midnight in the user's time zone.
@@ -186,6 +187,7 @@ class HeliumClient:
         :param course_ids: Only these classes' assignments.
         :param completed: Only completed (``True``) or incomplete (``False``) assignments.
         :param overdue: Only overdue assignments.
+        :param category_ids: Only these categories' assignments.
         :param search: Only assignments whose title, category, or class title matches.
         :return: The assignments, as ``GET /planner/homework/`` returns them.
         :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
@@ -198,6 +200,8 @@ class HeliumClient:
             params["completed"] = _flag(completed)
         if overdue is not None:
             params["overdue"] = _flag(overdue)
+        if category_ids:
+            params["category__id"] = ",".join(str(category_id) for category_id in category_ids)
         if search:
             params["search"] = search
         return await self._get_list("/planner/homework/", params)
@@ -232,24 +236,48 @@ class HeliumClient:
         """
         return await self._get_object("/planner/grades/")
 
+    async def get_needed_grade(self, course_id: int, target_id: int, desired_grade: float) -> dict[str, Any]:
+        """
+        Get the score a class needs to reach a desired overall grade, as Helium's grade calculator works it out.
+
+        :param course_id: The class.
+        :param target_id: In a weighted class, a category with weight and exactly one ungraded assignment left; in a
+            points-based class, one of its ungraded assignments.
+        :param desired_grade: The desired overall class grade, 0-100.
+        :return: The result, as ``GET /planner/grades/needed/`` returns it.
+        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        """
+        return await self._get_object("/planner/grades/needed/", {"course": str(course_id), "target": str(target_id),
+                                                                  "desired_grade": str(desired_grade)})
+
     async def list_notes(self,
                          search: str | None = None,
                          *,
-                         homework_id: int | None = None) -> list[dict[str, Any]]:
+                         homework_id: int | None = None,
+                         course_id: int | None = None,
+                         event_id: int | None = None,
+                         resource_id: int | None = None) -> list[dict[str, Any]]:
         """
         List the account's notes, with their content (a Quill Delta).
 
         :param search: Only notes whose title, text, or linked item's title matches.
         :param homework_id: Only the note linked to this assignment.
+        :param course_id: Only notes linked to this class's assignments or resources.
+        :param event_id: Only the note linked to this event.
+        :param resource_id: Only the note linked to this resource.
         :return: The notes, as ``GET /planner/notes/?include_content=true`` returns them.
         :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
-        return await self._get_list("/planner/notes/", _notes_params(search, homework_id))
+        return await self._get_list("/planner/notes/",
+                                    _notes_params(search, homework_id, course_id, event_id, resource_id))
 
     async def list_notes_page(self,
                               search: str | None = None,
                               *,
                               homework_id: int | None = None,
+                              course_id: int | None = None,
+                              event_id: int | None = None,
+                              resource_id: int | None = None,
                               page: int = 1,
                               page_size: int = 10) -> Page:
         """
@@ -257,14 +285,17 @@ class HeliumClient:
 
         :param search: Only notes whose title, text, or linked item's title matches.
         :param homework_id: Only the note linked to this assignment.
+        :param course_id: Only notes linked to this class's assignments or resources.
+        :param event_id: Only the note linked to this event.
+        :param resource_id: Only the note linked to this resource.
         :param page: Which page, counting from 1.
         :param page_size: How many notes a page holds (at most 100).
         :return: The page, its notes as ``GET /planner/notes/?include_content=true`` returns them. A page past the
             last is empty.
         :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
-        params = {**_notes_params(search, homework_id), "ordering": "-updated_at", "page": str(page),
-                  "page_size": str(page_size)}
+        params = {**_notes_params(search, homework_id, course_id, event_id, resource_id), "ordering": "-updated_at",
+                  "page": str(page), "page_size": str(page_size)}
         try:
             return await self._get_page("/planner/notes/", params)
         except HeliumNotFoundError:
@@ -291,8 +322,8 @@ class HeliumClient:
         """
         return await self._get_list("/planner/resources/")
 
-    async def _get_object(self, path: str) -> dict[str, Any]:
-        body = await self._request("GET", path)
+    async def _get_object(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        body = await self._request("GET", path, params=params)
         return body if isinstance(body, dict) else {}
 
     async def _get_page(self, path: str, params: dict[str, str]) -> Page:
@@ -327,7 +358,10 @@ class HeliumClient:
             raise HeliumConnectionError(f"Couldn't reach Helium: {e}") from e
 
         status = response.status_code
-        body = _json(response.text) if response.text else None
+        try:
+            body = json.loads(response.text) if response.text else None
+        except ValueError:
+            body = None
         if 200 <= status < 300:
             return body
         elif status == 400:
@@ -339,20 +373,30 @@ class HeliumClient:
         elif status == 404:
             raise HeliumNotFoundError("Helium couldn't find what was asked for.")
         elif status == 429:
-            raise HeliumRateLimitedError("Helium asked for fewer requests.",
-                                         {"retry_after": _seconds(response.headers.get("Retry-After"))})
+            retry_after = response.headers.get("Retry-After")
+            try:
+                seconds = max(1, int(retry_after)) if retry_after is not None else DEFAULT_RETRY_AFTER
+            except ValueError:
+                seconds = DEFAULT_RETRY_AFTER
+            raise HeliumRateLimitedError("Helium asked for fewer requests.", {"retry_after": seconds})
         elif status >= 500:
             raise HeliumConnectionError(f"Helium answered {status}.")
         else:
             raise HeliumValidationError(f"Helium answered {status}.", {"errors": body})
 
 
-def _notes_params(search: str | None, homework_id: int | None) -> dict[str, str]:
+def _notes_params(search: str | None,
+                  homework_id: int | None,
+                  course_id: int | None = None,
+                  event_id: int | None = None,
+                  resource_id: int | None = None) -> dict[str, str]:
     params = {"include_content": "true"}
     if search:
         params["search"] = search
-    if homework_id is not None:
-        params["homework"] = str(homework_id)
+    for name, value in (("homework", homework_id), ("course", course_id), ("event", event_id),
+                        ("resource", resource_id)):
+        if value is not None:
+            params[name] = str(value)
     return params
 
 
@@ -364,17 +408,3 @@ def _window(start: date | datetime | None, end: date | datetime | None) -> dict[
 
 def _flag(value: bool) -> str:
     return "true" if value else "false"
-
-
-def _json(text: str) -> Any:
-    try:
-        return json.loads(text)
-    except ValueError:
-        return None
-
-
-def _seconds(value: str | None) -> int:
-    try:
-        return max(1, int(value)) if value is not None else DEFAULT_RETRY_AFTER
-    except ValueError:
-        return DEFAULT_RETRY_AFTER

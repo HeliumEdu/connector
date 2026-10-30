@@ -65,7 +65,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         ]
     app.router.routes.append(Route("/", _docs, methods=["GET"]))
     app.router.routes.append(Route("/status", _status, methods=["GET"]))
-    app.router.routes.extend(_well_known_routes(WELL_KNOWN_DIR))
+    well_known = sorted(path for path in WELL_KNOWN_DIR.glob("*") if path.is_file() and not path.name.startswith("."))
+    app.router.routes.extend(Route(f"/.well-known/{path.name}", _answers(path.read_text().strip()), methods=["GET"])
+                             for path in well_known)
     app.add_middleware(ScopeChallengeMiddleware)
     if settings.origin_secret:
         app.add_middleware(OriginSecretMiddleware, secret=settings.origin_secret)
@@ -133,23 +135,14 @@ class MuppetsMiddleware:
 
 
 async def _no_event_stream(request: Request) -> Response:
-    if _from_a_browser(request):
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "text/event-stream" not in accept:
         return await _docs(request)
     return Response(status_code=405, headers={"Allow": "POST"})
 
 
 async def _docs(request: Request) -> Response:
     return RedirectResponse(DOCS_URL, status_code=302)
-
-
-def _from_a_browser(request: Request) -> bool:
-    accept = request.headers.get("accept", "")
-    return "text/html" in accept and "text/event-stream" not in accept
-
-
-def _well_known_routes(directory: Path) -> list[Route]:
-    files = sorted(path for path in directory.glob("*") if path.is_file() and not path.name.startswith("."))
-    return [Route(f"/.well-known/{path.name}", _answers(path.read_text().strip()), methods=["GET"]) for path in files]
 
 
 def _answers(text: str) -> Callable[[Request], Awaitable[Response]]:

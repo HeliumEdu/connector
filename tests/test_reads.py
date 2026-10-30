@@ -10,6 +10,7 @@ from helium_connector.reads import (
     shape_assignments,
     shape_classes,
     shape_grades,
+    shape_needed_grade,
     shape_notes,
     shape_resources,
 )
@@ -43,7 +44,7 @@ class TestShapeClasses(unittest.TestCase):
         bio = terms[0]["classes"][0]
         self.assertIsNone(terms[0]["overall_grade"])
         self.assertEqual(["Mon/Wed 10:00-10:50; Fri 11:00-11:50"], bio["meets"])
-        self.assertEqual([{"title": "Exams", "weight": "60.00"}], bio["categories"])
+        self.assertEqual([{"id": 200, "title": "Exams", "weight": "60.00"}], bio["categories"])
         self.assertIsNone(bio["teacher_email"])
         self.assertIsNone(bio["current_grade"])
 
@@ -205,7 +206,7 @@ class TestExpandEvents(unittest.TestCase):
         # THEN
         self.assertEqual([{"id": 1, "title": "Advising", "start": "2026-09-02T15:00:00-05:00",
                            "end": "2026-09-02T15:30:00-05:00", "all_day": False, "location": None,
-                           "repeats": False}], expanded)
+                           "priority": None, "repeats": False}], expanded)
 
     def test_weekly_series_keeps_its_local_time_across_dst(self) -> None:
         # GIVEN
@@ -247,10 +248,13 @@ class TestExpandEvents(unittest.TestCase):
 class TestShapeGrades(unittest.TestCase):
     def test_grades(self) -> None:
         # GIVEN
-        grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 90.123, "courses": [
-            {"title": "BIO 151", "overall_grade": -1, "has_weighted_grading": True, "num_homework": 4,
-             "num_homework_graded": 0, "points_earned": 0, "points_possible": 0,
-             "categories": [{"title": "Exams", "weight": 60, "overall_grade": -1, "num_homework_graded": 0}]}]},
+        exams = {"id": 3, "title": "Exams", "weight": 60, "overall_grade": -1, "trend": -0.0004, "num_homework": 2,
+                 "num_homework_graded": 0}
+        bio = {"id": 10, "title": "BIO 151", "overall_grade": -1, "trend": None, "has_weighted_grading": True,
+               "num_homework": 4, "num_homework_graded": 0, "points_earned": 0, "points_possible": 0,
+               "categories": [exams]}
+        grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 90.123, "trend": 0.0021,
+                                     "courses": [bio]},
                                     {"id": 1, "title": "Spring 2026", "overall_grade": 88, "courses": []}]}
 
         # WHEN
@@ -258,12 +262,49 @@ class TestShapeGrades(unittest.TestCase):
 
         # THEN
         self.assertEqual(1, len(shaped))
-        self.assertEqual(90.12, shaped[0]["overall_grade"])
+        self.assertEqual((2, 90.12, "up"), (shaped[0]["id"], shaped[0]["overall_grade"], shaped[0]["trend"]))
         bio = shaped[0]["classes"][0]
-        self.assertIsNone(bio["overall_grade"])
+        self.assertEqual((10, None, None), (bio["id"], bio["overall_grade"], bio["trend"]))
         self.assertTrue(bio["weighted"])
-        self.assertEqual({"title": "Exams", "weight": 60, "average_grade": None, "graded_assignments": 0},
-                         bio["categories"][0])
+        self.assertEqual({"id": 3, "title": "Exams", "weight": 60, "average_grade": None, "trend": "down",
+                          "graded_assignments": 0, "ungraded_assignments": 2}, bio["categories"][0])
+
+    def test_needed_grade_rounds_ties_as_the_app_does(self) -> None:
+        # GIVEN
+        shown_in_the_app = {76.25: 76.3, 83.35: 83.3, 2.675: 2.7, 100.05: 100.0, 99.95: 100.0, -0.35: -0.4}
+
+        # WHEN
+        shaped = {value: shape_needed_grade({"state": "achievable", "needed_grade": value})["needed_grade"]
+                  for value in shown_in_the_app}
+
+        # THEN
+        self.assertEqual(shown_in_the_app, shaped)
+
+    def test_steady_trend(self) -> None:
+        # GIVEN
+        grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 90, "trend": 0,
+                                     "courses": []}]}
+
+        # WHEN
+        shaped = shape_grades(grades)
+
+        # THEN
+        self.assertEqual("steady", shaped[0]["trend"])
+
+    def test_needed_grade_rounds_as_the_app_shows_it(self) -> None:
+        # GIVEN
+        needed = {"state": "achievable", "needed_grade": 83.33333, "weighted": True,
+                  "category": {"id": 3, "title": "Exams"},
+                  "assignment": {"id": 9, "title": "Final", "points_possible": 100.0, "needed_points": 83.33333},
+                  "total_weight_accounted_for": None}
+
+        # WHEN
+        shaped = shape_needed_grade(needed)
+
+        # THEN
+        self.assertEqual({"outcome": "achievable", "needed_grade": 83.3, "category": "Exams",
+                          "assignment": {"title": "Final", "points_possible": 100.0, "needed_points": 83.3},
+                          "total_weight": None}, shaped)
 
 
 class TestNotes(unittest.TestCase):
@@ -281,14 +322,14 @@ class TestNotes(unittest.TestCase):
                   "updated_at": "2026-09-01T00:00:00Z"},
                  {"id": 2, "title": "New", "content": {"ops": [{"insert": "b" * (MAX_NOTE_CHARS + 50)}]},
                   "updated_at": "2026-09-05T15:00:00Z", "linked_entity_title": "Lab 1",
-                  "linked_entity_type": "homework"}]
+                  "linked_entity_type": "homework", "course_id": 10}]
 
         # WHEN
-        shaped = shape_notes(notes, CHICAGO, 1)
+        shaped = shape_notes(notes, [{"id": 10, "title": "BIO 151"}], CHICAGO, 1)
 
         # THEN
         self.assertEqual(1, len(shaped))
-        self.assertEqual(("New", "Lab 1", "homework"), (shaped[0]["title"], shaped[0]["linked_to"],
-                                                        shaped[0]["linked_type"]))
+        self.assertEqual(("New", "Lab 1", "homework", "BIO 151"),
+                         (shaped[0]["title"], shaped[0]["linked_to"], shaped[0]["linked_type"], shaped[0]["class"]))
         self.assertEqual("2026-09-05T10:00:00-05:00", shaped[0]["updated"])
         self.assertEqual(MAX_NOTE_CHARS, len(shaped[0]["text"]))
