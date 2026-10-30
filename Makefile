@@ -1,4 +1,4 @@
-.PHONY: all install nopyc clean test check run package package-plugin
+.PHONY: all install nopyc clean test check run package package-plugin sync-assets
 
 SHELL := /usr/bin/env bash
 PYTHON_BIN ?= python
@@ -44,7 +44,7 @@ run: install
 	)
 
 package:
-	rm -rf build/lambda build/connector.zip
+	rm -rf build/lib build/lambda build/connector.zip
 	$(PYTHON_BIN) -m pip install . \
 		--target build/lambda \
 		--platform manylinux2014_$(LAMBDA_ARCH) \
@@ -57,3 +57,6 @@ package:
 
 package-plugin:
 	$(PYTHON_BIN) bin/package-plugin.py build/helium-plugin.zip
+
+sync-assets:
+	bin/sync-assets.sh

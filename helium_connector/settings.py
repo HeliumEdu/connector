@@ -10,8 +10,6 @@ DEFAULT_APP_URL: Final = "https://app.heliumedu.com"
 DEFAULT_CONNECTOR_URL: Final = "https://mcp.heliumedu.com"
 #: The path the MCP endpoint is served at.
 MCP_PATH: Final = "/mcp"
-#: Where OpenAI's plugin portal looks for its domain verification token.
-OPENAI_APPS_CHALLENGE_PATH: Final = "/.well-known/openai-apps-challenge"
 #: The scopes clients are told to ask for: reading the planner, and importing a term.
 SCOPES: Final = ("planner:read", "planner:import")
 
@@ -40,8 +38,6 @@ class Settings:
     sentry_dsn: str | None = None
     #: The deployment's name, for error reports.
     environment: str = "prod"
-    #: The token OpenAI's plugin portal asks to find at ``/.well-known/openai-apps-challenge``, to verify the domain.
-    openai_apps_challenge: str | None = None
 
     @property
     def resource_url(self) -> str:
@@ -66,5 +62,4 @@ class Settings:
                    allowed_hosts=[host.strip() for host in hosts.split(",") if host.strip()],
                    origin_secret=os.environ.get("HELIUM_ORIGIN_SECRET") or None,
                    sentry_dsn=os.environ.get("HELIUM_SENTRY_DSN") or None,
-                   environment=os.environ.get("HELIUM_ENVIRONMENT", "prod"),
-                   openai_apps_challenge=os.environ.get("HELIUM_OPENAI_APPS_CHALLENGE", "").strip() or None)
+                   environment=os.environ.get("HELIUM_ENVIRONMENT", "prod"))

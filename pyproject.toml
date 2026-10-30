@@ -45,7 +45,7 @@ packages = ["heliumedu", "helium_connector"]
 
 [tool.setuptools.package-data]
 heliumedu = ["py.typed"]
-helium_connector = ["py.typed"]
+helium_connector = ["py.typed", "well_known/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "helium_connector.__version__" }

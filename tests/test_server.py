@@ -1,10 +1,15 @@
 import asyncio
 import json
+import tempfile
 from datetime import date
+from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import httpx
+from starlette.applications import Starlette
 
+from helium_connector import app as app_module
 from helium_connector.app import create_app
 from helium_connector.models import Course
 from helium_connector.server import DOCS_URL
@@ -662,11 +667,18 @@ class TestReads(McpTestCase):
             result["structuredContent"]["resource_groups"])
 
 
-class TestOpenAiAppsChallenge(McpTestCase):
-    async def test_challenge_token_is_served_as_plain_text(self) -> None:
+class TestWellKnownFiles(McpTestCase):
+    def given_well_known_files(self, files: dict[str, str]) -> Starlette:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name, text in files.items():
+            (Path(directory.name) / name).write_text(text)
+        with mock.patch.object(app_module, "WELL_KNOWN_DIR", Path(directory.name)):
+            return create_app(Settings(connector_url=CONNECTOR_URL), self.helium.transport())
+
+    async def test_well_known_file_is_served_as_plain_text(self) -> None:
         # GIVEN
-        app = create_app(Settings(connector_url=CONNECTOR_URL, openai_apps_challenge="token-from-the-portal"),
-                         self.helium.transport())
+        app = self.given_well_known_files({"openai-apps-challenge": "token-from-the-portal\n"})
 
         # WHEN
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url=CONNECTOR_URL) as client:
@@ -678,12 +690,16 @@ class TestOpenAiAppsChallenge(McpTestCase):
         self.assertTrue(response.headers["Content-Type"].startswith("text/plain"))
         self.assertEqual([], self.helium.requests)
 
-    async def test_no_challenge_without_a_token(self) -> None:
+    async def test_only_well_known_files_are_served(self) -> None:
+        # GIVEN
+        app = self.given_well_known_files({"openai-apps-challenge": "token-from-the-portal", ".DS_Store": "junk"})
+
         # WHEN
-        response = await self.client.get("/.well-known/openai-apps-challenge")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url=CONNECTOR_URL) as client:
+            responses = [await client.get(f"/.well-known/{name}") for name in (".DS_Store", "assetlinks.json")]
 
         # THEN
-        self.assertEqual(404, response.status_code)
+        self.assertEqual([404, 404], [response.status_code for response in responses])
 
 
 class TestOriginSecret(McpTestCase):
