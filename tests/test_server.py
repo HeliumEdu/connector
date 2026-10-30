@@ -662,6 +662,30 @@ class TestReads(McpTestCase):
             result["structuredContent"]["resource_groups"])
 
 
+class TestOpenAiAppsChallenge(McpTestCase):
+    async def test_challenge_token_is_served_as_plain_text(self) -> None:
+        # GIVEN
+        app = create_app(Settings(connector_url=CONNECTOR_URL, openai_apps_challenge="token-from-the-portal"),
+                         self.helium.transport())
+
+        # WHEN
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url=CONNECTOR_URL) as client:
+            response = await client.get("/.well-known/openai-apps-challenge")
+
+        # THEN
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("token-from-the-portal", response.text)
+        self.assertTrue(response.headers["Content-Type"].startswith("text/plain"))
+        self.assertEqual([], self.helium.requests)
+
+    async def test_no_challenge_without_a_token(self) -> None:
+        # WHEN
+        response = await self.client.get("/.well-known/openai-apps-challenge")
+
+        # THEN
+        self.assertEqual(404, response.status_code)
+
+
 class TestOriginSecret(McpTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()

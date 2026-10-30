@@ -1,0 +1,102 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "helium",
+  "description": "Import a term from your syllabi into Helium, the student planner, and ask about what's due, your classes, notes, resources, and grades.",
+  "author": {
+    "name": "Helium Edu, LLC",
+    "email": "contact@heliumedu.com",
+    "url": "https://www.heliumedu.com/"
+  },
+  "homepage": "https://www.heliumedu.com/",
+  "repository": "https://github.com/HeliumEdu/connector",
+  "license": "Apache-2.0",
+  "keywords": ["student planner", "syllabus", "homework", "classes", "grades", "education"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Helium Student Planner",
+        "shortDescription": "Plan your term from syllabi",
+        "longDescription": "Helium is an open-source, color-coded student planner for classes, homework, grades, and notes, on the web, iOS, and Android.\n\nWith Helium, you can:\n\n- Import a term from your syllabi. Attach your syllabi and ask to set up your term. The plan is checked with Helium, and you see every class, meeting time, grading category, assignment, and event before anything is saved. Anything your syllabi leave unclear is asked about, and nothing is imported until you confirm. A syllabus that arrives later goes into the same term, and a class's .ics calendar file can be imported too. Imports only add to your planner; they never change or delete anything already there.\n- Ask about your planner. Ask what's due this week, what's overdue, when an exam is, what your notes say, which textbooks a class needs, or how your grades look, and the answer is read from your Helium account.\n\nYou sign in to Helium yourself and choose what can be accessed: reading your planner, and importing terms and classes. Dates and times use the time zone in your Helium settings.\n\nRequires a Helium account. Sign up at heliumedu.com.",
+        "developerName": "Helium Edu, LLC",
+        "category": "Education & Research",
+        "capabilities": [
+          "Import a term from syllabi",
+          "Import .ics calendar files",
+          "Read assignments, events, and notes",
+          "Read classes, resources, and grades"
+        ],
+        "websiteURL": "https://www.heliumedu.com/",
+        "supportURL": "https://www.heliumedu.com/support/",
+        "privacyPolicyURL": "https://www.heliumedu.com/privacy/",
+        "termsOfServiceURL": "https://www.heliumedu.com/terms/",
+        "defaultPrompt": [
+          "Set up my term in Helium from these syllabi.",
+          "What's due this week in Helium?",
+          "How are my grades in Helium?"
+        ],
+        "brandColor": "#418EB9",
+        "brandColorDark": "#418EB9",
+        "composerIcon": "./assets/logo.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Check grades in every class of the test account's example term.",
+              "prompt": "How are my grades in each class?",
+              "tools_triggered": "get_grades",
+              "expected_behavior": "Lists Creative Writing, Fundamentals of Programming, and Intro to Psychology with each class's overall grade and its grading categories, read from Helium. Nothing is changed."
+            },
+            {
+              "description": "Find an exam by searching assignments.",
+              "prompt": "When is my midterm in Fundamentals of Programming?",
+              "tools_triggered": "list_assignments",
+              "expected_behavior": "Gives the date and time of the Fundamentals of Programming Midterm, found by searching the student's assignments. Nothing is changed."
+            },
+            {
+              "description": "Search the student's notes.",
+              "prompt": "What do my notes say about the Little Albert experiment?",
+              "tools_triggered": "list_notes",
+              "expected_behavior": "Summarizes the test account's \"Little Albert Experiment\" note from Intro to Psychology. Nothing is changed."
+            },
+            {
+              "description": "Import a new term from a syllabus. The preview shows the plan before anything is saved; the import happens only after the reviewer confirms.",
+              "prompt": "Import this term into Helium: Spring 2027, January 11 to May 7, spring break March 15 to 19. BIO 151 meets Monday, Wednesday, and Friday 10:00 to 10:50 in Bagley 131 with Dr. Smith. Grading: Homework 40%, Exams 60%. Problem Set 1 is due January 22 at 11:59 PM; the Midterm is March 3, 10:00 to 10:50; the Final is May 4, 8:00 to 10:00. Office hours are Tuesdays 3:00 to 4:00 PM.",
+              "tools_triggered": "preview_import_term, import_term",
+              "expected_behavior": "Previews the plan (the Spring 2027 term with spring break, BIO 151 and its meeting times, room, teacher, Homework and Exams categories, three assignments, and weekly office hours), asks about anything the syllabus leaves out, such as credits, and asks whether to import. After the reviewer confirms, imports it and links to Helium, where the term appears under Classes."
+            },
+            {
+              "description": "Add a late syllabus to the term imported in the previous case, rather than creating a new term. Run after the previous case.",
+              "prompt": "Add CHEM 142 to my Spring 2027 term: Tuesdays and Thursdays 1:30 to 3:20 PM in Bagley 154, graded 100% on lab reports. Lab Report 1 is due January 26.",
+              "tools_triggered": "list_classes, preview_import_term, import_term",
+              "expected_behavior": "Finds the Spring 2027 term already in Helium, previews CHEM 142 in it, and after the reviewer confirms, adds the class to that term. No second Spring 2027 term is created."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Deleting is out of scope: the plugin only reads the planner and adds to it.",
+              "prompt": "Delete all my Intro to Psychology assignments in Helium.",
+              "expected_behavior": "Explains that it can't delete anything in Helium and that deletions are made in the Helium app. No tool changes anything."
+            },
+            {
+              "description": "Changing existing items is out of scope: imports only add.",
+              "prompt": "Mark Essay 1 in Creative Writing as complete in Helium.",
+              "expected_behavior": "Explains that it can't change existing assignments and that they're completed in the Helium app. No tool changes anything."
+            },
+            {
+              "description": "An import with nothing to import from shouldn't be guessed at.",
+              "prompt": "Import my classes into Helium.",
+              "expected_behavior": "Asks for the syllabi or the classes' details and the term's dates instead of importing anything. No import tool is called."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "Helium has no purchases or payments."
+      },
+      "publication": {
+        "release_notes": "First release: import a term from syllabi or a class's .ics file, add a late syllabus to a term already in Helium, and read assignments, events, notes, classes, resources, and grades."
+      }
+    }
+  }
+}

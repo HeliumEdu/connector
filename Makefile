@@ -1,4 +1,4 @@
-.PHONY: all install nopyc clean test check run package
+.PHONY: all install nopyc clean test check run package package-plugin
 
 SHELL := /usr/bin/env bash
 PYTHON_BIN ?= python
@@ -54,3 +54,6 @@ package:
 		--upgrade
 	cd build/lambda && zip -qr ../connector.zip . -x '*.pyc' '*/__pycache__/*'
 	@echo "Built build/connector.zip"
+
+package-plugin:
+	$(PYTHON_BIN) bin/package-plugin.py build/helium-plugin.zip

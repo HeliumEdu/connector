@@ -1,5 +1,6 @@
 import hmac
 import logging
+from collections.abc import Awaitable, Callable
 
 import httpx
 from mcp.server.auth.routes import create_protected_resource_routes
@@ -7,20 +8,21 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from helium_connector import __version__
 from helium_connector.server import DOCS_URL, create_server
-from helium_connector.settings import MCP_PATH, SCOPES, Settings
+from helium_connector.settings import MCP_PATH, OPENAI_APPS_CHALLENGE_PATH, SCOPES, Settings
 
 logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
     """
-    Build the connector's ASGI app: the MCP endpoint, its OAuth protected resource metadata, and a status check.
+    Build the connector's ASGI app: the MCP endpoint, its OAuth protected resource metadata, a status check, and
+    OpenAI's domain verification token when one is set.
     It's stateless and answers in JSON, so any instance can serve any request. A browser opening the connector's URL is
     sent to its documentation.
 
@@ -58,6 +60,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         ]
     app.router.routes.append(Route("/", _docs, methods=["GET"]))
     app.router.routes.append(Route("/status", _status, methods=["GET"]))
+    if settings.openai_apps_challenge:
+        app.router.routes.append(Route(OPENAI_APPS_CHALLENGE_PATH, _answers(settings.openai_apps_challenge),
+                                       methods=["GET"]))
     app.add_middleware(ScopeChallengeMiddleware)
     if settings.origin_secret:
         app.add_middleware(OriginSecretMiddleware, secret=settings.origin_secret)
@@ -137,6 +142,13 @@ async def _docs(request: Request) -> Response:
 def _from_a_browser(request: Request) -> bool:
     accept = request.headers.get("accept", "")
     return "text/html" in accept and "text/event-stream" not in accept
+
+
+def _answers(text: str) -> Callable[[Request], Awaitable[Response]]:
+    async def answer(request: Request) -> Response:
+        return PlainTextResponse(text)
+
+    return answer
 
 
 async def _status(request: Request) -> JSONResponse:
