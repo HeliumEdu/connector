@@ -10,12 +10,12 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
-from mcp.types import CallToolResult, InputRequiredResult, ToolAnnotations
+from mcp.types import CallToolResult, InputRequiredResult, Tool, ToolAnnotations
 from pydantic import Field, ValidationError
 
 from helium_connector import __version__
 from helium_connector.auth import AGENT, HeliumTokenVerifier
-from helium_connector.models import ClassesPlan, TermPlan
+from helium_connector.models import ExistingTerm, ImportPlan, TermPlan
 from helium_connector.planning import build_import, describe_import, existing_term, explain_platform_errors, \
     summarize, to_confirm, validate, warnings
 from helium_connector.reads import due_between, expand_events, shape_assignments, shape_classes, shape_grades, \
@@ -44,30 +44,51 @@ MAX_WINDOW_DAYS: Final = 366
 DEFAULT_PAGE_SIZE: Final = 25
 #: The most items a list returns at a time.
 MAX_PAGE_SIZE: Final = 100
+#: How the import tools describe allowing duplicates.
+DUPLICATES_DESCRIPTION: Final = ("Import even if the new term (same title and dates) or a class (same title, in an "
+                                 "existing term) is already in Helium.")
+#: How the .ics tools describe their file.
+ICS_DESCRIPTION: Final = "The calendar, as the .ics file's text, unchanged."
+#: How the .ics tools describe where its entries go.
+ICS_CLASS_DESCRIPTION: Final = ("The class whose assignments the entries become (an id from list_classes, or from "
+                                "what import_term returned). Unset imports them as events.")
+#: The import sections an .ics import fills, by the name the student knows them by.
+_ICS_SECTION_NAMES: Final = {"homework": "assignments", "events": "events"}
 #: What the server tells the model it's for.
 INSTRUCTIONS: Final = (
-    "Helium is a free student planner. These tools set up a term in the student's Helium account from their syllabi "
-    "(classes, meeting times, grading categories, assignments, and events), and read the student's assignments, "
-    "events, notes, classes, resources, and grades.\n\n"
-    "A term holds every class the student takes in it, so gather the syllabus for each class in the term before "
-    "importing, and import them together with import_term. A syllabus that comes after the term is in Helium goes "
-    "into that term with import_classes (list_classes gives the term's id).\n\n"
+    "Helium is a free student planner. These tools set up a term in the student's Helium account (classes, meeting "
+    "times, grading categories, assignments, and events), and read the student's assignments, events, notes, "
+    "classes, resources, and grades.\n\n"
+    "A term comes from the student's syllabi, plus any .ics calendar files they have (a professor's assignment "
+    "schedule, or one exported from another planner) and what they tell you. Read the syllabi into a plan for "
+    "import_term. Don't copy a calendar file's entries into the plan: once its class is in Helium, import the file's "
+    "text with import_ics, which adds its entries as that class's assignments (or as events, with no class). Ask the "
+    "student which class a calendar is for when it isn't clear. A calendar has only titles, dates, and times; "
+    "grading, meeting times, and credits still come from the syllabus or the student. A Helium export file (a "
+    "backup, or a schedule shared by another student) imports in the Helium app under Settings, Import / Export.\n\n"
+    "A term holds every class the student takes in it. Imports only add to Helium, and nothing they add can be "
+    "changed or deleted through these tools, so gather everything before importing: the syllabus for each class, any "
+    "calendar files, and the student's answers. Then ask whether they have more syllabi, calendars, or details for "
+    "the term, and import only once they say they're ready. Something that comes later still has a place: a class "
+    "goes into its term with import_term, the plan's term given by id (list_classes gives it), and a calendar into "
+    "its class with import_ics.\n\n"
     "Syllabi often leave out what the student knows: the term's dates and days off, credits, the room or whether a "
     "class is online, meeting times that differ by day, whether a lecture and its lab are graded together, the "
     "grading scheme, due dates for recurring work, and due times for work due in class. Ask the student about "
-    "anything the syllabi leave unclear rather than guessing, and leave a value unset when it's still unknown.\n\n"
-    "preview_import_term and preview_import_classes check a plan with Helium without saving anything. They return "
-    "problems to fix, warnings, what the plan leaves unset (to_confirm), and a summary to confirm with the student "
-    "before importing. Dates and times in a plan are local: Helium places them in the time zone set in the student's "
-    "Helium account, which the previews return."
+    "anything the sources leave unclear rather than guessing, and leave a value unset when it's still unknown.\n\n"
+    "preview_import_term and preview_import_ics check an import with Helium without saving anything. "
+    "preview_import_term returns problems to fix, warnings, what the plan leaves unset (to_confirm), and a summary to "
+    "confirm with the student before importing. Dates and times in a plan are local: Helium places them in "
+    "the time zone set in the student's Helium account, which the previews return."
 )
 #: The guided syllabus import, for clients that offer prompts.
 SYLLABUS_PROMPT: Final = """Set up my term in Helium from my syllabi.
 
-1. Ask me to attach the syllabus for every class I'm taking this term (an exported calendar file works too). Keep \
-asking until I say that's all of them, so every class imports together into one term. If the term is already in \
-Helium (list_classes shows it), add the new classes to it with import_classes instead.
-2. Read every syllabus, then ask me about anything they don't make clear. Use only the syllabi and my answers; don't \
+1. Ask me to attach the syllabus for every class I'm taking this term, and any .ics calendar files I have (like a \
+professor's assignment schedule). Keep asking until I say that's everything. If the term is already in Helium \
+(list_classes shows it), import new classes into it by its id. If I have a Helium export file, tell me to import it \
+in the Helium app under Settings, Import / Export.
+2. Read every syllabus, then ask me about anything they don't make clear. Use only my files and my answers; don't \
 fill gaps from what's typical. Ask especially about:
    - the term's first and last days, and days with no class (holidays, breaks)
    - credits for each class
@@ -77,10 +98,14 @@ fill gaps from what's typical. Ask especially about:
    - the actual due dates of recurring work, like weekly problem sets
    - the time of day for work due in class or due "that week"
    - how each class is graded: weighted categories and their weights, or points
+   - which class each calendar file is for
    If something is still unknown after asking, leave it out rather than guessing.
-3. Check the plan with preview_import_term (or preview_import_classes). Fix every problem it lists, and ask me about \
-what it lists under to_confirm and warnings.
-4. Show me the summary, and import only after I confirm it."""
+3. Check the plan with preview_import_term. Fix every problem it lists, and ask me about what it lists under \
+to_confirm and warnings.
+4. Imports can't be undone here, so before importing, show me the summary and ask whether I have anything else to add \
+for this term. Import only after I say I'm ready.
+5. After the classes are in Helium, import each calendar file into its class with import_ics (check it first with \
+preview_import_ics), using the class ids the import returned."""
 
 Status = Literal["all", "incomplete", "completed", "overdue"]
 
@@ -122,39 +147,42 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         except HeliumError as e:
             raise _tool_error(e) from e
 
-    async def import_plan(plan: TermPlan, *, dry_run: bool, allow_duplicate_term: bool) -> dict[str, Any]:
-        outcome = "ready" if dry_run else "imported"
-        problems = validate(plan)
-        if problems:
-            return {outcome: False, "problems": problems, **_notes(plan)}
-        async with helium() as (client, time_zone):
-            if not allow_duplicate_term and await _existing_term(client, plan):
-                return {outcome: False, **_notes(plan),
-                        "problems": [f"A term named '{plan.course_group.title}' with these dates is already in "
-                                     f"Helium. Set allow_duplicate_term to import a second copy, or add classes to "
-                                     f"it with import_classes."]}
-            return await send(client, time_zone, plan, dry_run=dry_run)
-
-    async def import_classes_plan(plan: ClassesPlan,
-                                  *,
-                                  dry_run: bool,
-                                  allow_duplicate_classes: bool) -> dict[str, Any]:
+    async def import_plan(plan: ImportPlan, *, dry_run: bool, allow_duplicates: bool) -> dict[str, Any]:
         outcome = "ready" if dry_run else "imported"
         async with helium() as (client, time_zone):
-            course_group = next((group for group in await client.list_course_groups()
-                                 if group["id"] == plan.course_group_id), None)
-            if course_group is None:
-                return {outcome: False, "problems": [f"Term {plan.course_group_id} isn't in Helium. list_classes "
-                                                     f"gives each term's id."]}
-            term_plan = TermPlan(term=existing_term(course_group), classes=plan.courses, events=plan.events)
+            course_group_id = None
+            if isinstance(plan.course_group, ExistingTerm):
+                course_group_id = plan.course_group.id
+                course_group = next((group for group in await client.list_course_groups()
+                                     if group["id"] == course_group_id), None)
+                if course_group is None:
+                    return {outcome: False, "problems": [f"Term {course_group_id} isn't in Helium. list_classes "
+                                                         f"gives each term's id."]}
+                term = existing_term(course_group)
+            else:
+                term = plan.course_group
+            term_plan = TermPlan(term=term, classes=plan.courses, events=plan.events)
             problems = validate(term_plan)
-            if not problems and not allow_duplicate_classes:
-                problems = [f"Class '{title}' is already in term '{course_group['title']}'. Set "
-                            f"allow_duplicate_classes to add a second copy."
-                            for title in await _classes_in_term(client, plan)]
+            if not problems and not allow_duplicates:
+                problems = await _duplicates(client, term_plan, course_group_id)
             if problems:
                 return {outcome: False, "problems": problems, **_notes(term_plan)}
-            return await send(client, time_zone, term_plan, dry_run=dry_run, course_group_id=plan.course_group_id)
+            return await send(client, time_zone, term_plan, dry_run=dry_run, course_group_id=course_group_id)
+
+    async def import_ics_file(ics: str, course_id: int | None, *, dry_run: bool) -> dict[str, Any]:
+        outcome = "ready" if dry_run else "imported"
+        async with helium() as (client, time_zone):
+            try:
+                result = await client.import_ics(ics, course_id=course_id, dry_run=dry_run)
+            except HeliumValidationError as e:
+                return {outcome: False, "problems": _explain_ics_errors((e.meta or {}).get("errors"), course_id)}
+        created = {name: result.counts[section] for section, name in _ICS_SECTION_NAMES.items()
+                   if result.counts.get(section)}
+        if dry_run:
+            return {"ready": True, "time_zone": time_zone.key, "class_id": course_id, "would_create": created}
+        logger.info(f"Imported an .ics file into {'a class' if course_id else 'events'}")
+        return {"imported": True, "class_id": course_id, "created": created,
+                "open_in_helium": f"{settings.app_url}/planner"}
 
     async def send(client: HeliumClient,
                    time_zone: ZoneInfo,
@@ -177,54 +205,48 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
 
     @server.tool(title="Preview a term import",
                  description="Check a term's assignments, events, classes, meeting times, and grading categories "
-                             "against what Helium accepts, without saving anything. Returns every problem to fix, "
-                             "or a summary of what import_term would create, with what the plan leaves unset.",
+                             "against what Helium accepts, without saving anything: a new term, or classes for one "
+                             "already in Helium. Returns every problem to fix, or a summary of what import_term would "
+                             "create, with what the plan leaves unset.",
                  annotations=_reads("Preview a term import"))
-    async def preview_import_term(plan: TermPlan,
-                                  allow_duplicate_term: bool = Field(
-                                      default=False,
-                                      description="Preview even if a term with the same title and dates is already "
-                                                  "in Helium.")) -> dict[str, Any]:
-        return await import_plan(plan, dry_run=True, allow_duplicate_term=allow_duplicate_term)
+    async def preview_import_term(plan: ImportPlan,
+                                  allow_duplicates: bool = Field(
+                                      default=False, description=DUPLICATES_DESCRIPTION)) -> dict[str, Any]:
+        return await import_plan(plan, dry_run=True, allow_duplicates=allow_duplicates)
 
     @server.tool(title="Import a term",
                  description="Save a term's assignments, events, classes, meeting times, and grading categories to "
-                             "Helium as a new term, all at once. Adds to the account; changes nothing already "
-                             "there. preview_import_term shows what it would create.",
+                             "Helium, all at once: as a new term, or into one already in Helium. Adds to the account; "
+                             "changes nothing already there. preview_import_term shows what it would create.",
                  annotations=ToolAnnotations(title="Import a term", read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=False, open_world_hint=False))
-    async def import_term(plan: TermPlan,
-                          allow_duplicate_term: bool = Field(
-                              default=False,
-                              description="Import even if a term with the same title and dates is already in "
-                                          "Helium.")) -> dict[str, Any]:
-        return await import_plan(plan, dry_run=False, allow_duplicate_term=allow_duplicate_term)
+    async def import_term(plan: ImportPlan,
+                          allow_duplicates: bool = Field(default=False,
+                                                         description=DUPLICATES_DESCRIPTION)) -> dict[str, Any]:
+        return await import_plan(plan, dry_run=False, allow_duplicates=allow_duplicates)
 
-    @server.tool(title="Preview a class import",
-                 description="Check classes for a term already in Helium, with their assignments, events, meeting "
-                             "times, and grading categories, against what Helium accepts, without saving anything. "
-                             "Returns every problem to fix, or a summary of what import_classes would create, with "
-                             "what the plan leaves unset.",
-                 annotations=_reads("Preview a class import"))
-    async def preview_import_classes(plan: ClassesPlan,
-                                     allow_duplicate_classes: bool = Field(
-                                         default=False,
-                                         description="Preview even if a class with the same title is already in "
-                                                     "the term.")) -> dict[str, Any]:
-        return await import_classes_plan(plan, dry_run=True, allow_duplicate_classes=allow_duplicate_classes)
+    @server.tool(title="Preview an .ics import",
+                 description="Check an .ics calendar file against what Helium accepts, without saving anything: "
+                             "how many assignments (in a class already in Helium) or events its entries would "
+                             "become. Returns the problem if Helium can't import it.",
+                 annotations=_reads("Preview an .ics import"))
+    async def preview_import_ics(ics: str = Field(description=ICS_DESCRIPTION),
+                                 class_id: int | None = Field(default=None,
+                                                              description=ICS_CLASS_DESCRIPTION)) -> dict[str, Any]:
+        return await import_ics_file(ics, class_id, dry_run=True)
 
-    @server.tool(title="Import classes",
-                 description="Save classes, with their assignments, events, meeting times, and grading categories, to "
-                             "a term already in Helium, all at once. Adds to the account; changes nothing already "
-                             "there. preview_import_classes shows what it would create.",
-                 annotations=ToolAnnotations(title="Import classes", read_only_hint=False, destructive_hint=False,
-                                             idempotent_hint=False, open_world_hint=False))
-    async def import_classes(plan: ClassesPlan,
-                             allow_duplicate_classes: bool = Field(
-                                 default=False,
-                                 description="Import even if a class with the same title is already in the "
-                                             "term.")) -> dict[str, Any]:
-        return await import_classes_plan(plan, dry_run=False, allow_duplicate_classes=allow_duplicate_classes)
+    @server.tool(title="Import an .ics file",
+                 description="Save an .ics calendar file's entries to Helium, all at once: as assignments in a class "
+                             "already in Helium (uncategorized and ungraded, since a calendar has only titles, "
+                             "dates, and times), or as events. Repeating entries are expanded, and cancelled ones "
+                             "left out. Adds to the account; changes nothing already there. Importing the same file "
+                             "twice adds its entries twice. preview_import_ics shows what it would create.",
+                 annotations=ToolAnnotations(title="Import an .ics file", read_only_hint=False,
+                                             destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+    async def import_ics(ics: str = Field(description=ICS_DESCRIPTION),
+                         class_id: int | None = Field(default=None,
+                                                      description=ICS_CLASS_DESCRIPTION)) -> dict[str, Any]:
+        return await import_ics_file(ics, class_id, dry_run=False)
 
     @server.prompt(title="Import syllabi",
                    description="Set up a term in Helium from your syllabi, answering questions about anything they "
@@ -353,6 +375,16 @@ class HeliumServer(MCPServer[Any]):
     carry pydantic's error codes and links).
     """
 
+    async def list_tools(self) -> list[Tool]:
+        tools = await super().list_tools()
+        for tool in tools:
+            # A model parameter is a bare $ref; some clients (Claude's directory review) want each parameter typed
+            for parameter in tool.input_schema.get("properties", {}).values():
+                if "$ref" in parameter:
+                    parameter.setdefault("type", "object")
+            _drop_field_titles(tool.input_schema)
+        return tools
+
     async def call_tool(self,
                         name: str,
                         arguments: dict[str, Any],
@@ -365,6 +397,22 @@ class HeliumServer(MCPServer[Any]):
             raise ToolError(_explain_input(e.__cause__)) from e.__cause__
 
 
+def _drop_field_titles(schema: Any) -> None:
+    """
+    Drop the titles pydantic generates from field names ("Start Time" for start_time): they restate the name and
+    cost tokens in every tool listing. Model titles (Term, Class, Assignment) stay.
+    """
+    if isinstance(schema, dict):
+        for name, field in (schema.get("properties") or {}).items():
+            if isinstance(field, dict) and str(field.get("title", "")).replace(" ", "_").casefold() == name.casefold():
+                del field["title"]
+        for value in schema.values():
+            _drop_field_titles(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            _drop_field_titles(value)
+
+
 def _explain_input(error: ValidationError) -> str:
     problems = [f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}" for detail in error.errors()]
     return "The input doesn't match the tool's schema:\n" + "\n".join(f"- {problem}" for problem in problems)
@@ -375,23 +423,35 @@ def _reads(title: str) -> ToolAnnotations:
                            open_world_hint=False)
 
 
-async def _existing_term(client: HeliumClient, plan: TermPlan) -> bool:
+async def _duplicates(client: HeliumClient, plan: TermPlan, course_group_id: int | None) -> list[str]:
+    """
+    What's already in Helium: the new term (same title and dates), or classes already in an existing term. Skipped when
+    the connection can't read what's there.
+    """
     try:
-        groups = await client.list_course_groups()
-    except HeliumPermissionError:
-        return False
-    return any(group["title"] == plan.course_group.title
-               and group["start_date"] == plan.course_group.start_date.isoformat()
-               and group["end_date"] == plan.course_group.end_date.isoformat() for group in groups)
-
-
-async def _classes_in_term(client: HeliumClient, plan: ClassesPlan) -> list[str]:
-    try:
+        if course_group_id is None:
+            groups = await client.list_course_groups()
+            term = plan.course_group
+            if any(group["title"] == term.title and group["start_date"] == term.start_date.isoformat()
+                   and group["end_date"] == term.end_date.isoformat() for group in groups):
+                return [f"A term named '{term.title}' with these dates is already in Helium. Set allow_duplicates "
+                        f"to import a second copy, or import into it with the term's id."]
+            return []
         courses = await client.list_courses()
     except HeliumPermissionError:
         return []
-    titles = {course["title"].casefold() for course in courses if course.get("course_group") == plan.course_group_id}
-    return [course.title for course in plan.courses if course.title.casefold() in titles]
+    titles = {course["title"].casefold() for course in courses if course.get("course_group") == course_group_id}
+    return [f"Class '{course.title}' is already in term '{plan.course_group.title}'. Set allow_duplicates to add a "
+            f"second copy." for course in plan.courses if course.title.casefold() in titles]
+
+
+def _explain_ics_errors(errors: Any, course_id: int | None) -> list[str]:
+    if isinstance(errors, dict) and "course" in errors:
+        return [f"Class {course_id} isn't in Helium. list_classes gives each class's id."]
+    if isinstance(errors, dict) and "details" in errors:
+        details = errors["details"]
+        return [str(detail) for detail in details] if isinstance(details, list) else [str(details)]
+    return explain_platform_errors(errors, {})
 
 
 def _notes(plan: TermPlan) -> dict[str, list[str]]:

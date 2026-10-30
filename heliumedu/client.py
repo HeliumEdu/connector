@@ -22,6 +22,8 @@ REQUEST_TIMEOUT: Final = 60
 DEFAULT_RETRY_AFTER: Final = 60
 #: The name the import file is uploaded under (Helium picks the parser from the extension).
 IMPORT_FILE_NAME: Final = "helium-import.json"
+#: The name an ``.ics`` import's file is sent under.
+ICS_FILE_NAME: Final = "calendar.ics"
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,28 @@ class HeliumClient:
         ids = body.pop("ids", None)
         counts = {section: count for section, count in body.items() if isinstance(count, int)}
         return ImportResult(counts, ids if isinstance(ids, dict) else {}, dry_run)
+
+    async def import_ics(self, ics: str, *, course_id: int | None = None, dry_run: bool = False) -> ImportResult:
+        """
+        Import an ``.ics`` calendar's entries, all or nothing: as assignments in an existing class, or as events. A
+        calendar carries only titles, dates, and times, so the assignments are ungraded and uncategorized.
+
+        :param ics: The calendar, as the ``.ics`` file's text.
+        :param course_id: The class its entries become assignments in; unset makes them events.
+        :param dry_run: Validate the import without keeping it.
+        :return: What was imported.
+        :raises: :class:`~heliumedu.exception.HeliumValidationError`: When Helium rejects the calendar or the class.
+        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        """
+        files = {"file[]": (ICS_FILE_NAME, ics.encode("utf-8"), "text/calendar")}
+        data = {"target_type": "events"} if course_id is None else {"target_type": "course", "course": str(course_id)}
+        params = {"dry_run": "true"} if dry_run else None
+        body = await self._request("POST", "/importexport/import/ics/", params=params, files=files, data=data)
+
+        if not isinstance(body, dict):
+            return ImportResult(dry_run=dry_run)
+        counts = {section: count for section, count in body.items() if isinstance(count, int)}
+        return ImportResult(counts, {}, dry_run)
 
     async def list_course_groups(self) -> list[dict[str, Any]]:
         """
@@ -287,12 +311,14 @@ class HeliumClient:
                        path: str,
                        *,
                        params: dict[str, str] | None = None,
-                       files: dict[str, tuple[str, bytes, str]] | None = None) -> Any:
+                       files: dict[str, tuple[str, bytes, str]] | None = None,
+                       data: dict[str, str] | None = None) -> Any:
         try:
             response = await self._session.request(method,
                                                    f"{self.base_url}{path}",
                                                    params=params,
                                                    files=files,
+                                                   data=data,
                                                    headers={"Authorization": f"Bearer {self._token}",
                                                             "Accept": "application/json",
                                                             "User-Agent": self.user_agent},

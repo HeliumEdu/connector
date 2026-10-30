@@ -20,12 +20,9 @@ MAX_ASSIGNMENTS: Final = 1000
 MAX_EVENTS: Final = 500
 #: The longest a repeating event can span, in days (a school year).
 MAX_REPEAT_DAYS: Final = 366
-#: Helium's default priority for new items.
-DEFAULT_PRIORITY: Final = 50
 #: The grade Helium stores for an item that hasn't been graded.
 UNGRADED: Final = "-1/100"
 
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ROW_ERROR = re.compile(r"^(?P<section>\w+) id (?P<row_id>\d+), (?P<field>\w+): (?P<message>.+)$", re.DOTALL)
 #: Import sections a plan fills, by the name the student knows them by.
 _SECTION_NAMES = {"course_groups": "terms", "courses": "classes", "course_schedules": "schedules",
@@ -248,15 +245,14 @@ def build_import(plan: TermPlan, time_zone: ZoneInfo) -> ImportPayload:
             homework_id = len(data["homework"]) + 1
             homework_category = category_ids.get(homework.category.casefold()) if homework.category else None
             data["homework"].append({"id": homework_id, "course": course_id, "category": homework_category,
-                                     "title": homework.title, "priority": DEFAULT_PRIORITY,
-                                     "current_grade": UNGRADED, "completed": False,
+                                     "title": homework.title, "current_grade": UNGRADED,
                                      **_timing(homework.due_date, homework.due_time, homework.end_time, time_zone)})
             labels[("homework", homework_id)] = f"Assignment '{homework.title}' ({course.title})"
 
     for event in plan.events:
         for day in occurrences(event, course_group.no_class_dates):
             event_id = len(data["events"]) + 1
-            data["events"].append({"id": event_id, "title": event.title, "priority": DEFAULT_PRIORITY,
+            data["events"].append({"id": event_id, "title": event.title,
                                    **_timing(day, event.start_time, event.end_time, time_zone)})
             labels[("events", event_id)] = f"Event '{event.title}' on {day.isoformat()}"
 
@@ -336,9 +332,6 @@ def _validate_course(course: Course, plan: TermPlan) -> list[str]:
         problems.append(f"{name}: its dates ({start_date} to {end_date}) fall outside the term "
                         f"({plan.course_group.start_date} to {plan.course_group.end_date}).")
     problems += _dates_outside("Class", course.title, "no-class date", course.no_class_dates, start_date, end_date)
-
-    if course.teacher_email and not _EMAIL.match(course.teacher_email):
-        problems.append(f"{name}: teacher email '{course.teacher_email}' isn't an email address.")
 
     no_class_dates = set(course.no_class_dates) | set(plan.course_group.no_class_dates)
     for schedule in course.schedules:

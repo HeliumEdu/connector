@@ -158,17 +158,32 @@ class TestTools(McpTestCase):
 
         # THEN
         tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
-        self.assertEqual({"preview_import_term", "import_term", "preview_import_classes", "import_classes",
+        self.assertEqual({"preview_import_term", "import_term", "preview_import_ics", "import_ics",
                           "list_assignments", "list_events", "list_notes", "list_classes", "list_resources",
                           "get_grades"}, set(tools))
         writes = [name for name, tool in tools.items() if not tool["annotations"]["readOnlyHint"]]
-        self.assertEqual(["import_term", "import_classes"], writes)
+        self.assertEqual(["import_term", "import_ics"], writes)
+        for name in ("preview_import_term", "import_term"):
+            self.assertEqual("object", tools[name]["inputSchema"]["properties"]["plan"]["type"], name)
         for name, tool in tools.items():
             self.assertTrue(tool["title"], name)
             self.assertEqual(tool["title"], tool["annotations"]["title"], name)
             self.assertFalse(tool["annotations"]["destructiveHint"], name)
             self.assertFalse(tool["annotations"]["openWorldHint"], name)
             self.assertLessEqual(len(name), 64)
+
+    async def test_field_titles_are_left_out_and_model_titles_kept(self) -> None:
+        # WHEN
+        response = await self.rpc("tools/list")
+
+        # THEN
+        tool = next(tool for tool in response.json()["result"]["tools"] if tool["name"] == "import_term")
+        schema = tool["inputSchema"]
+        self.assertNotIn("title", schema["properties"]["allow_duplicates"])
+        self.assertNotIn("title", schema["$defs"]["Meeting"]["properties"]["start_time"])
+        self.assertEqual(("Term", "Existing term", "Class", "Assignment"),
+                         tuple(schema["$defs"][name]["title"]
+                               for name in ("CourseGroup", "ExistingTerm", "Course", "Homework")))
 
 
 class TestPreview(McpTestCase):
@@ -289,7 +304,7 @@ class TestImport(McpTestCase):
                            [{"id": 4, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18"}])
 
         # WHEN
-        result = await self.call("import_term", plan=self.plan_arguments(), allow_duplicate_term=True)
+        result = await self.call("import_term", plan=self.plan_arguments(), allow_duplicates=True)
 
         # THEN
         self.assertTrue(result["structuredContent"]["imported"])
@@ -305,13 +320,13 @@ class TestImport(McpTestCase):
         self.assertTrue(result["structuredContent"]["imported"])
 
 
-class TestImportClasses(McpTestCase):
+class TestImportIntoAnExistingTerm(McpTestCase):
     TERM = {"id": 4, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
             "exceptions": "20260907"}
 
     def classes_arguments(self, term_id: int = 4) -> dict[str, Any]:
         plan = self.plan_arguments()
-        return {"term_id": term_id, "classes": plan["classes"], "events": plan["events"]}
+        return {"term": {"id": term_id}, "classes": plan["classes"], "events": plan["events"]}
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
@@ -320,7 +335,7 @@ class TestImportClasses(McpTestCase):
 
     async def test_preview_into_an_existing_term(self) -> None:
         # WHEN
-        result = await self.call("preview_import_classes", plan=self.classes_arguments())
+        result = await self.call("preview_import_term", plan=self.classes_arguments())
 
         # THEN
         content = result["structuredContent"]
@@ -335,7 +350,7 @@ class TestImportClasses(McpTestCase):
                            {**IMPORT_COUNTS, "course_groups": 0, "ids": {"courses": {"1": 51, "2": 52}}})
 
         # WHEN
-        result = await self.call("import_classes", plan=self.classes_arguments())
+        result = await self.call("import_term", plan=self.classes_arguments())
 
         # THEN
         content = result["structuredContent"]
@@ -349,7 +364,7 @@ class TestImportClasses(McpTestCase):
 
     async def test_unknown_term_is_a_problem(self) -> None:
         # WHEN
-        result = await self.call("import_classes", plan=self.classes_arguments(term_id=99))
+        result = await self.call("import_term", plan=self.classes_arguments(term_id=99))
 
         # THEN
         self.assertFalse(result["structuredContent"]["imported"])
@@ -361,7 +376,7 @@ class TestImportClasses(McpTestCase):
         self.helium.answer("GET", "/planner/coursegroups/", 200, [{**self.TERM, "end_date": "2026-10-01"}])
 
         # WHEN
-        result = await self.call("preview_import_classes", plan=self.classes_arguments())
+        result = await self.call("preview_import_term", plan=self.classes_arguments())
 
         # THEN
         self.assertFalse(result["structuredContent"]["ready"])
@@ -374,14 +389,80 @@ class TestImportClasses(McpTestCase):
         self.helium.answer("GET", "/planner/courses/", 200, [{"id": 9, "title": "bio 151", "course_group": 4}])
 
         # WHEN
-        refused = await self.call("import_classes", plan=self.classes_arguments())
-        allowed = await self.call("import_classes", plan=self.classes_arguments(), allow_duplicate_classes=True)
+        refused = await self.call("import_term", plan=self.classes_arguments())
+        allowed = await self.call("import_term", plan=self.classes_arguments(), allow_duplicates=True)
 
         # THEN
-        self.assertEqual(["Class 'BIO 151' is already in term 'Fall 2026'. Set allow_duplicate_classes to add a "
+        self.assertEqual(["Class 'BIO 151' is already in term 'Fall 2026'. Set allow_duplicates to add a "
                           "second copy."], refused["structuredContent"]["problems"])
         self.assertTrue(allowed["structuredContent"]["imported"])
         self.assertEqual(1, len(self.helium.requested("POST", "/importexport/import/")))
+
+
+class TestImportIcs(McpTestCase):
+    ICS = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:1\r\nSUMMARY:Lab 1\r\n"
+           "DTSTART:20270126T170000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+
+    async def test_preview_into_a_class(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 200,
+                           {**{section: 0 for section in IMPORT_COUNTS}, "homework": 4})
+
+        # WHEN
+        result = await self.call("preview_import_ics", ics=self.ICS, class_id=52)
+
+        # THEN
+        content = result["structuredContent"]
+        self.assertEqual({"ready": True, "time_zone": "America/Chicago", "class_id": 52,
+                          "would_create": {"assignments": 4}}, content)
+        request = self.helium.requested("POST", "/importexport/import/ics/")[0]
+        self.assertEqual("true", request.url.params["dry_run"])
+        body = request.read().decode("utf-8")
+        self.assertIn('name="target_type"\r\n\r\ncourse', body)
+        self.assertIn('name="course"\r\n\r\n52', body)
+        self.assertIn("SUMMARY:Lab 1", body)
+
+    async def test_import_as_events(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 200,
+                           {**{section: 0 for section in IMPORT_COUNTS}, "events": 2})
+
+        # WHEN
+        result = await self.call("import_ics", ics=self.ICS)
+
+        # THEN
+        content = result["structuredContent"]
+        self.assertTrue(content["imported"])
+        self.assertEqual({"events": 2}, content["created"])
+        self.assertIsNone(content["class_id"])
+        request = self.helium.requested("POST", "/importexport/import/ics/")[0]
+        self.assertNotIn("dry_run", request.url.params)
+        self.assertIn('name="target_type"\r\n\r\nevents', request.read().decode("utf-8"))
+
+    async def test_unknown_class_is_a_problem(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 400,
+                           {"course": ["Unresolved `course` reference `99`."]})
+
+        # WHEN
+        result = await self.call("import_ics", ics=self.ICS, class_id=99)
+
+        # THEN
+        self.assertEqual({"imported": False,
+                          "problems": ["Class 99 isn't in Helium. list_classes gives each class's id."]},
+                         result["structuredContent"])
+
+    async def test_calendar_helium_cannot_read_is_a_problem(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 400,
+                           {"details": "No events in the calendar file could be imported."})
+
+        # WHEN
+        result = await self.call("preview_import_ics", ics=self.ICS)
+
+        # THEN
+        self.assertEqual(["No events in the calendar file could be imported."],
+                         result["structuredContent"]["problems"])
 
 
 class TestPrompts(McpTestCase):

@@ -86,7 +86,9 @@ class TestBuildImport(unittest.TestCase):
         self.assertEqual("2026-12-14T08:00:00-06:00", final["start"])
         self.assertEqual("2026-12-14T10:00:00-06:00", final["end"])
         self.assertTrue(final["show_end_time"])
-        self.assertEqual(("-1/100", False, 50), (final["current_grade"], final["completed"], final["priority"]))
+        self.assertEqual("-1/100", final["current_grade"])
+        self.assertNotIn("priority", final, "Helium's default applies")
+        self.assertNotIn("completed", final, "Helium's default applies")
 
     def test_due_times_in_a_positive_offset_zone(self) -> None:
         # GIVEN
@@ -361,7 +363,6 @@ class TestValidate(unittest.TestCase):
         self.assertEqual([
             "Class 'CHEM 101': its dates (2026-08-31 to 2027-01-15) fall outside the term (2026-08-31 to "
             "2026-12-18).",
-            "Class 'CHEM 101': teacher email 'not an email' isn't an email address.",
             "Class 'CHEM 101', weekly schedule: the meeting on Tue starts at 11:00, which isn't before its end "
             "(10:00).",
             "Class 'CHEM 101', weekly schedule: meeting times on Thu can't start or end at midnight.",
