@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Weekday = Literal["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
-Title = Annotated[str, Field(min_length=1, max_length=255)]
+Title = Annotated[str, Field(min_length=1)]
 
 #: Weekdays in the order Helium's ``days_of_week`` string uses (Sunday first).
 WEEKDAYS: tuple[Weekday, ...] = ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
@@ -89,7 +89,7 @@ class Category(_Input):
     """
 
     title: Title
-    weight: Decimal = Field(default=Decimal(0), ge=0, le=100, decimal_places=2,
+    weight: Decimal = Field(default=Decimal(0),
                             description="Percent of the class grade. 0 for every category means points-based "
                                         "grading.")
 
@@ -122,14 +122,14 @@ class Course(_Input):
     model_config = ConfigDict(title="Class")
 
     title: Title
-    credits: Decimal | None = Field(default=None, ge=0, le=99, decimal_places=2,
+    credits: Decimal | None = Field(default=None,
                                     description="Credit hours. Syllabi often leave these out, though the student "
                                                 "knows them. Unset imports as 0.")
-    room: str | None = Field(default=None, max_length=255, description="Where the class meets in person.")
+    room: str | None = Field(default=None, description="Where the class meets in person.")
     is_online: bool = Field(default=False, description="The class meets online, with no room.")
-    teacher_name: str | None = Field(default=None, max_length=255)
-    teacher_email: str | None = Field(default=None, max_length=254)
-    website: str | None = Field(default=None, max_length=3000)
+    teacher_name: str | None = None
+    teacher_email: str | None = None
+    website: str | None = None
     start_date: date | None = Field(default=None, description="The class's first day, if not the term's.")
     end_date: date | None = Field(default=None, description="The class's last day, if not the term's.")
     no_class_dates: list[date] = Field(default_factory=list, max_length=366,
@@ -180,8 +180,8 @@ class CourseGroup(_Input):
 
 class TermPlan(_Input):
     """
-    A term's assignments, events, classes, schedules, and grading, read from the syllabi of every class in the term.
-    Dates and times are local: Helium places them in the time zone set in the student's Helium account.
+    A plan whose term is known: a new one, or one already in Helium as Helium has it. Dates and times are local: Helium
+    places them in the time zone set in the student's Helium account.
     """
 
     course_group: CourseGroup = Field(alias="term")
@@ -189,15 +189,23 @@ class TermPlan(_Input):
     events: list[Event] = Field(default_factory=list, max_length=500)
 
 
-class ClassesPlan(_Input):
+class ExistingTerm(_Input):
     """
-    Classes to add to a term already in Helium (a syllabus that came after the term was imported), with their
-    assignments, schedules, and grading, and any events. Dates and times are local: Helium places them in the time zone
-    set in the student's Helium account.
+    A term already in Helium, for classes that come after it was imported.
     """
 
-    model_config = ConfigDict(title="Classes")
+    model_config = ConfigDict(title="Existing term")
 
-    course_group_id: int = Field(alias="term_id", description="The term's id, from list_classes.")
+    id: int = Field(description="The term's id, from list_classes.")
+
+
+class ImportPlan(_Input):
+    """
+    A term's assignments, events, classes, schedules, and grading, read from the syllabi of every class in the term,
+    for a new term or one already in Helium. Dates and times are local: Helium places them in the time zone set in the
+    student's Helium account.
+    """
+
+    course_group: CourseGroup | ExistingTerm = Field(alias="term")
     courses: list[Course] = Field(min_length=1, max_length=50, alias="classes")
     events: list[Event] = Field(default_factory=list, max_length=500)

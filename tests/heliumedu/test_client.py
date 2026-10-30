@@ -2,7 +2,7 @@ from datetime import date
 
 import httpx
 
-from heliumedu.client import IMPORT_FILE_NAME, HeliumClient
+from heliumedu.client import ICS_FILE_NAME, IMPORT_FILE_NAME, HeliumClient
 from heliumedu.exception import (
     HeliumAuthError,
     HeliumConnectionError,
@@ -87,6 +87,40 @@ class TestImportData(HeliumClientTestCase):
         # THEN
         self.assertEqual("true", self.helium.requested("POST", "/importexport/import/")[0].url.params["dry_run"])
         self.assertTrue(result.dry_run)
+
+    async def test_import_ics_into_a_class(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 200, {**IMPORT_COUNTS, "homework": 4})
+        client = self.given_client()
+
+        # WHEN
+        result = await client.import_ics("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", course_id=52, dry_run=True)
+
+        # THEN
+        request = self.helium.requested("POST", "/importexport/import/ics/")[0]
+        body = request.read().decode("utf-8")
+        self.assertIn(f'name="file[]"; filename="{ICS_FILE_NAME}"', body)
+        self.assertIn("BEGIN:VCALENDAR", body)
+        self.assertIn('name="target_type"\r\n\r\ncourse', body)
+        self.assertIn('name="course"\r\n\r\n52', body)
+        self.assertEqual("true", request.url.params["dry_run"])
+        self.assertEqual(4, result.counts["homework"])
+        self.assertTrue(result.dry_run)
+
+    async def test_import_ics_as_events(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 200, IMPORT_COUNTS)
+        client = self.given_client()
+
+        # WHEN
+        await client.import_ics("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+
+        # THEN
+        request = self.helium.requested("POST", "/importexport/import/ics/")[0]
+        body = request.read().decode("utf-8")
+        self.assertIn('name="target_type"\r\n\r\nevents', body)
+        self.assertNotIn('name="course"', body)
+        self.assertNotIn("dry_run", request.url.params)
 
     async def test_import_returns_assigned_ids(self) -> None:
         # GIVEN

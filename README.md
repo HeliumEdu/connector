@@ -67,9 +67,9 @@ tools:
 | Tool                     | Access | Returns                                                                               |
 |--------------------------|--------|---------------------------------------------------------------------------------------|
 | `preview_import_term`    | Read   | Every problem with a term's plan, or a summary to confirm, without saving anything    |
-| `import_term`            | Write  | The new term's id and its classes' ids, imported all at once                          |
-| `preview_import_classes` | Read   | The same check, for classes to add to a term already in Helium                        |
-| `import_classes`         | Write  | The new classes' ids, added to a term already in Helium all at once                   |
+| `import_term`            | Write  | The term's id and its classes' ids: a new term, or classes added to an existing one   |
+| `preview_import_ics`     | Read   | How many assignments or events an `.ics` calendar file's entries would become         |
+| `import_ics`             | Write  | An `.ics` file's entries as a class's assignments, or as events, imported all at once |
 | `list_assignments`       | Read   | Assignments due in a window or matching text, with class, category, completion, grade |
 | `list_events`            | Read   | Events in a window or matching text, with repeating events listed per occurrence      |
 | `list_notes`             | Read   | Notes, optionally matching text or for one assignment, as plain text                  |
@@ -82,21 +82,21 @@ tools:
 Signing in grants two scopes, shown on Helium's consent screen:
 
 - `planner:read`: every read tool.
-- `planner:import`: `preview_import_term`, `import_term`, `preview_import_classes`, and `import_classes`.
+- `planner:import`: `preview_import_term`, `import_term`, `preview_import_ics`, and `import_ics`.
 
-`import_term` and `import_classes` are the only writes, and none is sensitive: no tool sends messages, makes payments,
-or changes or deletes anything. `import_term` adds one new term (its classes, meeting times, grading categories,
-assignments, and events), and `import_classes` adds classes to a term already in Helium, each in a single transaction,
-so a failed import saves nothing. `import_term` refuses a term whose title and dates are already in Helium unless
-`allow_duplicate_term` is set, and `import_classes` refuses a class already in the term unless
-`allow_duplicate_classes` is set. The previews check the same plan with Helium without saving it.
+`import_term` and `import_ics` are the only writes, and none is sensitive: no tool sends messages, makes payments, or
+changes or deletes anything. `import_term` adds a new term (its classes, meeting times, grading categories,
+assignments, and events), or classes to a term already in Helium, and `import_ics` adds a calendar file's entries (as
+a class's assignments, or as events), each in a single transaction, so a failed import saves nothing. `import_term`
+refuses a new term whose title and dates are already in Helium, or a class already in the term, unless
+`allow_duplicates` is set. The previews check the same import with Helium without saving it.
 
 #### Inputs
 
-- `preview_import_term`, `import_term`: `plan` (the term, its classes, and its events, with local dates and times),
-  `allow_duplicate_term`.
-- `preview_import_classes`, `import_classes`: `plan` (the term's id, from `list_classes`, plus the classes and events),
-  `allow_duplicate_classes`.
+- `preview_import_term`, `import_term`: `plan` (the term, or `{"id": ...}` for one already in Helium, from
+  `list_classes`; its classes; and its events, with local dates and times), `allow_duplicates`.
+- `preview_import_ics`, `import_ics`: `ics` (the `.ics` file's text), `class_id` (unset imports the entries as
+  events). Helium reads the calendar: repeating entries are expanded and cancelled ones left out.
 - `list_assignments`: `start_date`, `end_date`, `class_id`, `status` (`all`, `incomplete`, `completed`, `overdue`),
   `query`, `limit` (1-100, default 25), `page`.
 - `list_events`: `start_date`, `end_date`, `query`, `limit` (1-100, default 25), `page`.
