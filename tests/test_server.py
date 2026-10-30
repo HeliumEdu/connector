@@ -7,6 +7,7 @@ from typing import Any
 from unittest import mock
 
 import httpx
+import jsonschema
 from starlette.applications import Starlette
 
 from helium_connector import app as app_module
@@ -184,11 +185,38 @@ class TestTools(McpTestCase):
         # THEN
         tool = next(tool for tool in response.json()["result"]["tools"] if tool["name"] == "import_term")
         schema = tool["inputSchema"]
+        plan = schema["properties"]["plan"]
+        course = plan["properties"]["classes"]["items"]
+        weekly = course["properties"]["schedules"]["items"]["oneOf"][0]
         self.assertNotIn("title", schema["properties"]["allow_duplicates"])
-        self.assertNotIn("title", schema["$defs"]["Meeting"]["properties"]["start_time"])
-        self.assertEqual(("Term", "Existing term", "Class", "Assignment"),
-                         tuple(schema["$defs"][name]["title"]
-                               for name in ("CourseGroup", "ExistingTerm", "Course", "Homework")))
+        self.assertNotIn("title", weekly["properties"]["meetings"]["items"]["properties"]["start_time"])
+        self.assertEqual(["Term", "Existing term"], [term["title"] for term in plan["properties"]["term"]["anyOf"]])
+        self.assertEqual(("Class", "Assignment"),
+                         (course["title"], course["properties"]["assignments"]["items"]["title"]))
+
+    async def test_schemas_are_self_contained(self) -> None:
+        # WHEN
+        response = await self.rpc("tools/list")
+
+        # THEN
+        for tool in response.json()["result"]["tools"]:
+            schemas = json.dumps([tool["inputSchema"], tool.get("outputSchema")])
+            for keyword in ('"$ref"', '"$defs"', '"discriminator"'):
+                self.assertNotIn(keyword, schemas, f"{tool['name']} lists {keyword}, which ChatGPT's model can't see")
+
+    async def test_import_schema_accepts_a_class_schedule_and_rejects_a_guessed_one(self) -> None:
+        # GIVEN
+        response = await self.rpc("tools/list")
+        tool = next(tool for tool in response.json()["result"]["tools"] if tool["name"] == "preview_import_term")
+        plan = self.plan_arguments()
+        guessed = json.loads(json.dumps(plan))
+        guessed["classes"][0]["schedules"] = [{"pattern": "weekly", "days": ["monday", "wednesday", "friday"],
+                                               "start_time": "10:00", "end_time": "10:50"}]
+
+        # WHEN/THEN
+        jsonschema.validate({"plan": plan}, tool["inputSchema"])
+        with self.assertRaises(jsonschema.ValidationError, msg="ChatGPT's first guess at a weekly schedule"):
+            jsonschema.validate({"plan": guessed}, tool["inputSchema"])
 
 
 class TestPreview(McpTestCase):

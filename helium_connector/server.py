@@ -2,7 +2,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -450,10 +450,9 @@ class HeliumServer(MCPServer[Any]):
     async def list_tools(self) -> list[Tool]:
         tools = await super().list_tools()
         for tool in tools:
-            # A model parameter is a bare $ref; some clients (Claude's directory review) want each parameter typed
-            for parameter in tool.input_schema.get("properties", {}).values():
-                if "$ref" in parameter:
-                    parameter.setdefault("type", "object")
+            tool.input_schema = _inline_definitions(tool.input_schema)
+            if tool.output_schema:
+                tool.output_schema = _inline_definitions(tool.output_schema)
             _drop_field_titles(tool.input_schema)
         return tools
 
@@ -471,6 +470,32 @@ class HeliumServer(MCPServer[Any]):
                         for detail in cause.errors()]
             raise ToolError("The input doesn't match the tool's schema:\n"
                             + "\n".join(f"- {problem}" for problem in problems)) from cause
+
+
+def _inline_definitions(schema: dict[str, Any]) -> dict[str, Any]:
+    """
+    Self-contain a tool schema: each ``$ref`` becomes the definition it names, and ``$defs`` goes. ChatGPT validates
+    arguments against ``$defs`` but doesn't show them to its model, which then guesses nested shapes such as a class's
+    schedules. Pydantic's ``discriminator`` goes too: it isn't JSON Schema, and each ``oneOf`` branch fixes its own
+    ``pattern``.
+
+    :param schema: A pydantic-generated JSON schema.
+    :return: The same schema with no ``$ref``, ``$defs``, or ``discriminator``.
+    """
+    return cast(dict[str, Any], _resolve_references(schema, schema.get("$defs", {})))
+
+
+def _resolve_references(node: Any, definitions: dict[str, Any]) -> Any:
+    if isinstance(node, list):
+        return [_resolve_references(item, definitions) for item in node]
+    if not isinstance(node, dict):
+        return node
+    if "$ref" in node:
+        siblings = {key: value for key, value in node.items() if key != "$ref"}
+        return _resolve_references({**definitions[node["$ref"].removeprefix("#/$defs/")], **siblings}, definitions)
+    return {key: ({name: _resolve_references(field, definitions) for name, field in value.items()}
+                  if key == "properties" else _resolve_references(value, definitions))
+            for key, value in node.items() if key not in ("$defs", "discriminator")}
 
 
 def _drop_field_titles(schema: Any) -> None:
