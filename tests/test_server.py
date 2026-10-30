@@ -13,7 +13,7 @@ from starlette.applications import Starlette
 from helium_connector import app as app_module
 from helium_connector.app import create_app
 from helium_connector.models import Course
-from helium_connector.server import DOCS_URL
+from helium_connector.server import BEFORE_IMPORT, DOCS_URL
 from helium_connector.settings import Settings
 from tests.testcase import IMPORT_COUNTS, TOKEN, AsyncTestCase, given_a_plan, uploaded_import
 
@@ -227,6 +227,9 @@ class TestPreview(McpTestCase):
         # THEN
         content = result["structuredContent"]
         self.assertTrue(content["ready"])
+        self.assertFalse(content["saved"])
+        self.assertEqual(BEFORE_IMPORT, content["before_import"],
+                         "a passing preview says the import waits on the student, for clients that skip instructions")
         self.assertEqual("America/Chicago", content["time_zone"])
         self.assertEqual(3, content["summary"]["totals"]["assignments"])
         request = self.helium.requested("POST", "/importexport/import/")[0]
@@ -446,8 +449,8 @@ class TestImportIcs(McpTestCase):
 
         # THEN
         content = result["structuredContent"]
-        self.assertEqual({"ready": True, "time_zone": "America/Chicago", "class_id": 52,
-                          "would_create": {"assignments": 4}}, content)
+        self.assertEqual({"ready": True, "saved": False, "before_import": BEFORE_IMPORT,
+                          "time_zone": "America/Chicago", "class_id": 52, "would_create": {"assignments": 4}}, content)
         request = self.helium.requested("POST", "/importexport/import/ics/")[0]
         self.assertEqual("true", request.url.params["dry_run"])
         body = request.read().decode("utf-8")

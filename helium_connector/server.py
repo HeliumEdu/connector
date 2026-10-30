@@ -55,6 +55,9 @@ ICS_CLASS_DESCRIPTION: Final = ("The class whose assignments the entries become 
                                 "what import_term returned). Unset imports them as events.")
 #: The import sections an .ics import fills, by the name the student knows them by.
 _ICS_SECTION_NAMES: Final = {"homework": "assignments", "events": "events"}
+#: Closes every passing preview: not every client applies INSTRUCTIONS, but each reads the tool's result.
+BEFORE_IMPORT: Final = ("Nothing is saved yet. Show the student this summary, including anything to confirm, and "
+                        "import only after they confirm.")
 #: What the server tells the model it's for.
 INSTRUCTIONS: Final = (
     "Helium is a free student planner. These tools set up a term in the student's Helium account (classes, meeting "
@@ -214,7 +217,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         created = {name: result.counts[section] for section, name in _ICS_SECTION_NAMES.items()
                    if result.counts.get(section)}
         if dry_run:
-            return {"ready": True, "time_zone": time_zone.key, "class_id": course_id, "would_create": created}
+            return {"ready": True, "saved": False, "before_import": BEFORE_IMPORT, "time_zone": time_zone.key,
+                    "class_id": course_id, "would_create": created}
         logger.info(f"Imported an .ics file into {'a class' if course_id else 'events'}")
         return {"imported": True, "class_id": course_id, "created": created,
                 "open_in_helium": f"{settings.app_url}/planner"}
@@ -233,7 +237,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
             return {outcome: False, **_notes(plan),
                     "problems": explain_platform_errors((e.meta or {}).get("errors"), payload.labels)}
         if dry_run:
-            return {"ready": True, "time_zone": time_zone.key, "summary": summarize(plan), **_notes(plan)}
+            return {"ready": True, "saved": False, "before_import": BEFORE_IMPORT, "time_zone": time_zone.key,
+                    "summary": summarize(plan), **_notes(plan)}
         logger.info(f"Imported {len(plan.courses)} class(es)")
         return {"imported": True, **describe_import(plan, result.counts, result.ids, course_group_id),
                 **_notes(plan), "summary": summarize(plan), "open_in_helium": f"{settings.app_url}/classes"}
