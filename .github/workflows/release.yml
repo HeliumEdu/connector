@@ -109,6 +109,7 @@ jobs:
     with:
       consolidate_history: ${{ inputs.consolidate_history && needs.release.result == 'success' }}
       squash_boundary_sha: ${{ needs.prereq.outputs.squash_boundary_sha }}
+      skip_ci: ${{ needs.release.result == 'success' }}
     secrets:
       bot_app_id: ${{ secrets.HELIUM_BOT_APP_ID }}
       bot_private_key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}

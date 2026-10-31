@@ -84,6 +84,10 @@ INSTRUCTIONS: Final = (
     "preview_import_term returns problems to fix, warnings, what the plan leaves unset (to_confirm), and a summary to "
     "confirm with the student before importing. Dates and times in a plan are local: Helium places them in "
     "the time zone set in the student's Helium account, which the previews return.\n\n"
+    "When the student asks what's due, include overdue work they haven't finished (list_assignments with status "
+    "overdue) ahead of what's coming up: it's usually the most pressing. A class's grade counts only assignments "
+    "marked complete with a grade entered, so ungraded work isn't counted against the student until it's graded; "
+    "say so when ungraded work could change how a grade looks.\n\n"
     "When the student asks what to work on or study, read before suggesting: overdue and incomplete assignments, "
     "what's due soon, today's meeting times and events (for the time they have free), and grades with their trends. "
     "Suggest a few things that fit their time: overdue work and what's due soonest first, then heavily weighted work "
@@ -333,9 +337,23 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                                                   category_ids=[category_id] if category_id is not None else None,
                                                   search=query)
             categories = await client.list_categories()
+            overdue = 0
+            if status in ("all", "incomplete") and query is None and start >= _today(time_zone):
+                overdue_start, _ = _window(None, None, time_zone, backward=True)
+                overdue_homework = await client.list_homework(
+                    overdue_start - timedelta(days=1), start + timedelta(days=1),
+                    course_ids=[class_id] if class_id is not None else None, overdue=True,
+                    category_ids=[category_id] if category_id is not None else None)
+                overdue = len(due_between(shape_assignments(overdue_homework, courses, categories, groups, time_zone),
+                                          overdue_start, start - timedelta(days=1)))
         assignments = due_between(shape_assignments(homework, courses, categories, groups, time_zone), start, end)
-        return {"start_date": start.isoformat(), "end_date": end.isoformat(),
-                **_paged("assignments", assignments, limit, page)}
+        result: dict[str, Any] = {"start_date": start.isoformat(), "end_date": end.isoformat(),
+                                  **_paged("assignments", assignments, limit, page)}
+        if overdue:
+            result["overdue_before_window"] = overdue
+            result["note"] = (f"{overdue} unfinished assignment(s) are overdue, due before this window. List them "
+                              "with status overdue and mention them first.")
+        return result
 
     @server.tool(title="List events",
                  description="List the user's events (ungraded calendar items) in a window, with repeating events "
@@ -417,8 +435,10 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
     @server.tool(title="Get grades",
                  description="Get the user's grades: each term's classes, with overall grade, trend (up, down, "
                              "or steady), weighted or points-based grading, and each category's weight, average, "
-                             "and ungraded assignments. With target_grade, class_id, and target_id, returns instead "
-                             "the score Helium calculates the class needs to reach target_grade.",
+                             "and ungraded assignments. A grade counts only assignments marked complete with a "
+                             "grade entered; ungraded ones aren't counted against the student until they're graded. "
+                             "With target_grade, class_id, and target_id, returns instead the score Helium "
+                             "calculates the class needs to reach target_grade.",
                  annotations=_reads("Get grades"))
     async def get_grades(include_past_terms: bool = Field(default=False,
                                                           description="Include terms that have ended."),
