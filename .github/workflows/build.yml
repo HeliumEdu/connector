@@ -44,4 +44,13 @@ jobs:
       - name: Test
         run: make test
       - name: Package
-        run: make package
+        run: make package package-plugin
+      - name: Upload release candidate
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: connector-build
+          path: |
+            build/connector.zip
+            build/helium-plugin.zip
+          retention-days: 90
