@@ -1,0 +1,113 @@
+name: "Deploy"
+
+run-name: "Deploy `${{ inputs.version_type == 'latest' && 'latest' || inputs.specific_version }}`"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version to deploy'
+        required: true
+        type: choice
+        default: latest
+        options:
+          - latest
+          - specific
+      specific_version:
+        description: 'Specific version tag (only used if version_type is "specific", ex: 1.2.3)'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version_type:
+        description: "Version to deploy"
+        required: false
+        type: string
+        default: latest
+      specific_version:
+        description: "Specific version tag (used when version_type is specific)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "helium-connector-deploy"
+
+jobs:
+  determine-version:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.HELIUM_BOT_APP_ID }}
+          private-key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
+          skip-token-revoke: true
+
+      - name: Determine version to deploy
+        id: version
+        uses: HeliumEdu/.github/actions/determine-version@main
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          repo: connector
+          specific-version: ${{ inputs.version_type != 'latest' && inputs.specific_version || '' }}
+
+  deploy:
+    name: Deploy to prod
+    needs: [determine-version]
+    runs-on: ubuntu-latest
+
+    env:
+      TERRAFORM_API_TOKEN: ${{ secrets.TERRAFORM_API_TOKEN }}
+      VERSION: ${{ needs.determine-version.outputs.version }}
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.HELIUM_BOT_APP_ID }}
+          private-key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
+          owner: HeliumEdu
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.determine-version.outputs.version }}
+      - name: Checkout infra repository
+        uses: actions/checkout@v6
+        with:
+          repository: HeliumEdu/infra
+          token: ${{ steps.app-token.outputs.token }}
+          path: deploy
+          fetch-depth: 0
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Get GitHub App bot user ID
+        id: get-bot-user-id
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+      - name: Setup git
+        run: |
+          cd deploy
+          git config user.name "${{ steps.app-token.outputs.app-slug }}[bot]"
+          git config user.email "${{ steps.get-bot-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Install dependencies
+        run: pip install requests==2.34.2
+      - name: Run deployment script
+        run: ./bin/deploy-release.py "$VERSION" --deploy-repo ./deploy
