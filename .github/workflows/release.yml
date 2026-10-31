@@ -1,19 +1,10 @@
 name: Release
 
-run-name: Release `${{ inputs.bump_type }}`
+run-name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      bump_type:
-        description: 'Version bump type'
-        required: true
-        type: choice
-        default: patch
-        options:
-          - patch
-          - minor
-          - major
       trigger_deploy_after_release:
         description: 'Deploy to prod after release'
         required: true
@@ -27,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
   issues: none
   pull-requests: none
 
@@ -35,10 +27,9 @@ concurrency:
 
 jobs:
   prereq:
-    uses: HeliumEdu/.github/.github/workflows/release-prereq.yml@main
+    uses: alexdlaird/.github/.github/workflows/release-prereq.yml@main
     with:
-      bump_type: ${{ inputs.bump_type }}
-      version_format: python
+      version_pattern: 's/^__version__ = ".*"/__version__ = "${VERSION}"/'
       version_file: helium_connector/__init__.py
       repo_slug: HeliumEdu/connector
     secrets:
@@ -50,29 +41,21 @@ jobs:
     needs: [prereq]
 
     env:
-      FORCE_COLOR: 1
-      PYTHONUNBUFFERED: 1
-      PYTHONDONTWRITEBYTECODE: 1
       VERSION: ${{ needs.prereq.outputs.version }}
       COMMIT_SHA: ${{ needs.prereq.outputs.squash_commit_sha }}
 
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Download the release build
+        uses: actions/download-artifact@v8
         with:
-          ref: ${{ needs.prereq.outputs.squash_commit_sha }}
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Install dependencies
-        run: make install
-      - name: Check and test
-        run: make check test
-      - name: Package
+          name: connector-build
+          path: build
+          run-id: ${{ needs.prereq.outputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Name packages for the release
         run: |
-          make package package-plugin
           mv build/connector.zip "build/connector-$VERSION.zip"
           mv build/helium-plugin.zip "build/helium-plugin-$VERSION.zip"
       - name: Create GitHub release
@@ -80,7 +63,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$VERSION" "build/connector-$VERSION.zip" "build/helium-plugin-$VERSION.zip" \
-            --target "$COMMIT_SHA" --title "$VERSION" --generate-notes
+            --repo "${{ github.repository }}" --target "$COMMIT_SHA" --title "$VERSION" --generate-notes
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -151,10 +134,18 @@ jobs:
   cleanup:
     needs: [prereq, release, deploy]
     if: always() && needs.prereq.result == 'success'
-    uses: HeliumEdu/.github/.github/workflows/release-cleanup.yml@main
+    uses: alexdlaird/.github/.github/workflows/release-cleanup.yml@main
     with:
       consolidate_history: ${{ inputs.consolidate_history && needs.release.result == 'success' }}
       squash_boundary_sha: ${{ needs.prereq.outputs.squash_boundary_sha }}
     secrets:
       bot_app_id: ${{ secrets.HELIUM_BOT_APP_ID }}
       bot_private_key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
+
+  bump:
+    needs: [release, cleanup]
+    if: always() && needs.release.result == 'success'
+    uses: ./.github/workflows/bump-version.yml
+    with:
+      bump_type: next
+    secrets: inherit
