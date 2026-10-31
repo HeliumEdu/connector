@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download the tested build
+      - name: Download the release build
         uses: actions/download-artifact@v8
         with:
           name: connector-build
