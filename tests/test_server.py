@@ -1,10 +1,11 @@
 import asyncio
 import json
 import tempfile
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import httpx
 import jsonschema
@@ -533,6 +534,16 @@ class TestPrompts(McpTestCase):
         instructions = response.json()["result"]["instructions"]
         self.assertIn("use get_grades with target_grade rather than calculating it", instructions)
 
+    async def test_instructions_put_overdue_work_first_and_explain_ungraded_work(self) -> None:
+        # WHEN
+        response = await self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                 "clientInfo": {"name": "test", "version": "1"}})
+
+        # THEN
+        instructions = response.json()["result"]["instructions"]
+        self.assertIn("When the student asks what's due, include overdue work", instructions)
+        self.assertIn("ungraded work isn't counted against the student until it's graded", instructions)
+
 
 class TestReads(McpTestCase):
     async def test_assignments_default_to_the_next_week(self) -> None:
@@ -565,6 +576,56 @@ class TestReads(McpTestCase):
         self.assertEqual(365, (date.fromisoformat(content["end_date"]) -
                                date.fromisoformat(content["start_date"])).days)
         self.assertEqual("true", self.helium.requested("GET", "/planner/homework/")[0].url.params["overdue"])
+
+    async def test_upcoming_assignments_count_what_is_overdue(self) -> None:
+        # GIVEN
+        today = datetime.now(ZoneInfo("America/Chicago")).date()
+        self.helium.answer("GET", "/planner/homework/", 200, [
+            {"id": 1, "title": "Late lab", "course": 10, "all_day": False,
+             "start": f"{today - timedelta(days=2)}T18:00:00Z"},
+            {"id": 2, "title": "Quiz", "course": 10, "all_day": False,
+             "start": f"{today + timedelta(days=1)}T18:00:00Z"}])
+        self.helium.answer("GET", "/planner/courses/", 200, [])
+        self.helium.answer("GET", "/planner/categories/", 200, [])
+
+        # WHEN
+        result = await self.call("list_assignments")
+
+        # THEN
+        content = result["structuredContent"]
+        self.assertEqual(["Quiz"], [item["title"] for item in content["assignments"]])
+        self.assertEqual(1, content["overdue_before_window"])
+        self.assertIn("status overdue", content["note"])
+        overdue_request = self.helium.requested("GET", "/planner/homework/")[1]
+        self.assertEqual("true", overdue_request.url.params["overdue"])
+
+    async def test_upcoming_assignments_with_nothing_overdue_add_nothing(self) -> None:
+        # GIVEN
+        today = datetime.now(ZoneInfo("America/Chicago")).date()
+        self.helium.answer("GET", "/planner/homework/", 200, [
+            {"id": 2, "title": "Quiz", "course": 10, "all_day": False,
+             "start": f"{today + timedelta(days=1)}T18:00:00Z"}])
+        self.helium.answer("GET", "/planner/courses/", 200, [])
+        self.helium.answer("GET", "/planner/categories/", 200, [])
+
+        # WHEN
+        result = await self.call("list_assignments", status="incomplete")
+
+        # THEN
+        self.assertNotIn("overdue_before_window", result["structuredContent"])
+        self.assertNotIn("note", result["structuredContent"])
+
+    async def test_completed_assignments_skip_the_overdue_check(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/homework/", 200, [])
+        self.helium.answer("GET", "/planner/courses/", 200, [])
+        self.helium.answer("GET", "/planner/categories/", 200, [])
+
+        # WHEN
+        await self.call("list_assignments", status="completed")
+
+        # THEN
+        self.assertEqual(1, len(self.helium.requested("GET", "/planner/homework/")))
 
     async def test_assignments_outside_the_window_are_left_out(self) -> None:
         # GIVEN

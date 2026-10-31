@@ -77,16 +77,11 @@ jobs:
           aws s3 cp "build/connector-$VERSION.zip" "s3://${BUCKET_NAME}/helium/connector/connector-$VERSION.zip"
 
   deploy:
-    name: Deploy to prod
+    name: Deploy
     needs: [prereq, release]
     if: "!cancelled() && inputs.trigger_deploy_after_release && needs.release.result == 'success'"
-
-    env:
-      TERRAFORM_API_TOKEN: ${{ secrets.TERRAFORM_API_TOKEN }}
-      VERSION: ${{ needs.prereq.outputs.version }}
-
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -94,42 +89,18 @@ jobs:
         with:
           client-id: ${{ secrets.HELIUM_BOT_APP_ID }}
           private-key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
-          owner: HeliumEdu
-      - uses: actions/checkout@v6
+          skip-token-revoke: true
+
+      - name: Run the deploy workflow and wait for it
+        uses: alexdlaird/shipshape/run-workflow@v1
         with:
-          ref: ${{ needs.prereq.outputs.squash_commit_sha }}
-      - name: Checkout infra repository
-        uses: actions/checkout@v6
-        with:
-          repository: HeliumEdu/infra
+          workflow: deploy.yml
+          ref: develop
           token: ${{ steps.app-token.outputs.token }}
-          path: deploy
-          fetch-depth: 0
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Get GitHub App bot user ID
-        id: get-bot-user-id
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
-      - name: Setup git
-        run: |
-          cd deploy
-          git config user.name "${{ steps.app-token.outputs.app-slug }}[bot]"
-          git config user.email "${{ steps.get-bot-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-      - name: Install dependencies
-        run: pip install requests==2.34.2
-      - name: Run deployment script
-        run: ./bin/deploy-release.py "$VERSION" --deploy-repo ./deploy
+          timeout-minutes: 25
+          inputs: |
+            version_type=specific
+            specific_version=${{ needs.prereq.outputs.version }}
 
   cleanup:
     needs: [prereq, release, deploy]
@@ -138,6 +109,7 @@ jobs:
     with:
       consolidate_history: ${{ inputs.consolidate_history && needs.release.result == 'success' }}
       squash_boundary_sha: ${{ needs.prereq.outputs.squash_boundary_sha }}
+      skip_ci: ${{ needs.release.result == 'success' }}
     secrets:
       bot_app_id: ${{ secrets.HELIUM_BOT_APP_ID }}
       bot_private_key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
