@@ -17,17 +17,6 @@ on:
         description: 'Specific version tag (only used if version_type is "specific", ex: 1.2.3)'
         required: false
         type: string
-  workflow_call:
-    inputs:
-      version_type:
-        description: "Version to deploy"
-        required: false
-        type: string
-        default: latest
-      specific_version:
-        description: "Specific version tag (used when version_type is specific)"
-        required: false
-        type: string
 
 permissions:
   contents: read
