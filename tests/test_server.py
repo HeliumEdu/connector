@@ -542,7 +542,16 @@ class TestPrompts(McpTestCase):
         # THEN
         instructions = response.json()["result"]["instructions"]
         self.assertIn("When the student asks what's due, include overdue work", instructions)
-        self.assertIn("ungraded work isn't counted against the student until it's graded", instructions)
+        self.assertIn("When ungraded work could change how a grade looks, say so.", instructions)
+
+    async def test_get_grades_explains_that_ungraded_work_isnt_counted(self) -> None:
+        # WHEN
+        response = await self.rpc("tools/list")
+
+        # THEN
+        tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
+        self.assertIn("ungraded ones aren't counted against the student until they're graded",
+                      tools["get_grades"]["description"])
 
 
 class TestReads(McpTestCase):
