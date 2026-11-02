@@ -60,9 +60,7 @@ BEFORE_IMPORT: Final = ("Nothing is saved yet. Show the student this summary, in
                         "import only after they confirm.")
 #: What the server tells the model it's for.
 INSTRUCTIONS: Final = (
-    "Helium is a free student planner. These tools set up a term in the student's Helium account (classes, meeting "
-    "times, grading categories, assignments, and events), and read the student's assignments, events, notes, "
-    "classes, resources, and grades.\n\n"
+    "These tools set up a term in a student's Helium planner and read it.\n\n"
     "A term comes from the student's syllabi, plus any .ics calendar files they have (a professor's assignment "
     "schedule, or one exported from another planner) and what they tell you. Read the syllabi into a plan for "
     "import_term. Don't copy a calendar file's entries into the plan: once its class is in Helium, import the file's "
@@ -85,9 +83,8 @@ INSTRUCTIONS: Final = (
     "confirm with the student before importing. Dates and times in a plan are local: Helium places them in "
     "the time zone set in the student's Helium account, which the previews return.\n\n"
     "When the student asks what's due, include overdue work they haven't finished (list_assignments with status "
-    "overdue) ahead of what's coming up: it's usually the most pressing. A class's grade counts only assignments "
-    "marked complete with a grade entered, so ungraded work isn't counted against the student until it's graded; "
-    "say so when ungraded work could change how a grade looks.\n\n"
+    "overdue) ahead of what's coming up: it's usually the most pressing. When ungraded work could change how a grade "
+    "looks, say so.\n\n"
     "When the student asks what to work on or study, read before suggesting: overdue and incomplete assignments, "
     "what's due soon, today's meeting times and events (for the time they have free), and grades with their trends. "
     "Suggest a few things that fit their time: overdue work and what's due soonest first, then heavily weighted work "
