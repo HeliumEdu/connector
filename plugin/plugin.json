@@ -14,7 +14,7 @@
   "extensions": {
     "com.openai": {
       "interface": {
-        "displayName": "Helium Student Planner",
+        "displayName": "Helium - Student Planner",
         "shortDescription": "Your semester, from syllabi",
         "longDescription": "Helium is an open-source, color-coded student planner for classes, homework, grades, and notes, on the web, iOS, and Android.\n\nWith Helium, you can:\n\n- Import a term from your syllabi. Attach your syllabi and ask to set up your term. The plan is checked with Helium, and you see every class, meeting time, grading category, assignment, and event before anything is saved. Anything your syllabi leave unclear is asked about, and nothing is imported until you confirm. A syllabus that arrives later goes into the same term, and a class's .ics calendar file can be imported too. Imports only add to your planner; they never change or delete anything already there.\n- Ask about your planner. Ask what's due this week, what's overdue, when an exam is, what your notes say, which textbooks a class needs, or how your grades look, and the answer is read from your Helium account.\n- Plan your study time. Ask what to work on with the time you have, or what you need on the rest of a class to reach a grade, and the suggestion is built from your Helium account.\n\nYou sign in to Helium yourself and approve what it can access: reading your planner, and importing terms and classes. Dates and times use the time zone in your Helium settings. Disconnect at any time in ChatGPT, or revoke access in Helium under Settings → Security & API.\n\nRequires a Helium account. Sign up at heliumedu.com.",
         "developerName": "Helium Edu, LLC",
