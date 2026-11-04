@@ -374,15 +374,17 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
 
     @server.tool(title="List notes",
                  description="List the user's notes as plain text: all of them, those matching a query, a "
-                             "class's, or the note on one assignment, event, or resource. Returns limit at a time, "
-                             "with total and has_more; pass page for the next.",
+                             "class's (its own note and its assignments' and resources'), or the note on one "
+                             "assignment, event, or resource. Returns limit at a time, with total and has_more; pass "
+                             "page for the next.",
                  annotations=_reads("List notes"))
     async def list_notes(query: str | None = Field(default=None,
                                                    description="Only notes whose title, text, or linked item "
                                                                "matches this text."),
                          class_id: int | None = Field(default=None,
-                                                      description="Only notes on this class's assignments or "
-                                                                  "resources (an id from list_classes)."),
+                                                      description="Only notes on this class itself or its "
+                                                                  "assignments or resources (an id from "
+                                                                  "list_classes)."),
                          assignment_id: int | None = Field(default=None,
                                                            description="Only the note on this assignment (an id "
                                                                        "from list_assignments)."),

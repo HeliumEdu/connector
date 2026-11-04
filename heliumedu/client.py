@@ -262,7 +262,7 @@ class HeliumClient:
 
         :param search: Only notes whose title, text, or linked item's title matches.
         :param homework_id: Only the note linked to this assignment.
-        :param course_id: Only notes linked to this class's assignments or resources.
+        :param course_id: Only notes linked to this class, or to its assignments or resources.
         :param event_id: Only the note linked to this event.
         :param resource_id: Only the note linked to this resource.
         :return: The notes, as ``GET /planner/notes/?include_content=true`` returns them.
@@ -285,7 +285,7 @@ class HeliumClient:
 
         :param search: Only notes whose title, text, or linked item's title matches.
         :param homework_id: Only the note linked to this assignment.
-        :param course_id: Only notes linked to this class's assignments or resources.
+        :param course_id: Only notes linked to this class, or to its assignments or resources.
         :param event_id: Only the note linked to this event.
         :param resource_id: Only the note linked to this resource.
         :param page: Which page, counting from 1.

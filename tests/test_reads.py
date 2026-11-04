@@ -333,3 +333,17 @@ class TestNotes(unittest.TestCase):
                          (shaped[0]["title"], shaped[0]["linked_to"], shaped[0]["linked_type"], shaped[0]["class"]))
         self.assertEqual("2026-09-05T10:00:00-05:00", shaped[0]["updated"])
         self.assertEqual(MAX_NOTE_CHARS, len(shaped[0]["text"]))
+
+    def test_class_note_names_its_class(self) -> None:
+        # GIVEN
+        notes = [{"id": 3, "title": "", "content": {"ops": [{"insert": "Office hours Tuesday\n"}]},
+                  "updated_at": "2026-09-05T15:00:00Z", "linked_entity_title": "BIO 151",
+                  "linked_entity_type": "course", "course_id": 10}]
+
+        # WHEN
+        shaped = shape_notes(notes, [{"id": 10, "title": "BIO 151"}], CHICAGO, 5)
+
+        # THEN
+        self.assertEqual(("BIO 151", "course", "BIO 151", "Office hours Tuesday"),
+                         (shaped[0]["linked_to"], shaped[0]["linked_type"], shaped[0]["class"],
+                          shaped[0]["text"].strip()))

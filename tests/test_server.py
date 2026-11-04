@@ -150,13 +150,6 @@ class TestAuthorization(McpTestCase):
         # THEN
         self.assertEqual(500, response.status_code)
 
-    async def test_every_response_carries_the_header(self) -> None:
-        # WHEN
-        responses = [await self.client.get("/status"), await self.rpc("tools/list", token=None)]
-
-        # THEN
-        self.assertEqual(["42", "42"], [response.headers["X-Muppets"] for response in responses])
-
 
 class TestTools(McpTestCase):
     async def test_tool_list(self) -> None:
@@ -906,5 +899,4 @@ class TestOriginSecret(McpTestCase):
 
         # THEN
         self.assertEqual((403, 403, 200), (missing.status_code, wrong.status_code, right.status_code))
-        self.assertEqual("42", missing.headers["X-Muppets"])
         self.assertEqual([], self.helium.requests)

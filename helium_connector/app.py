@@ -128,7 +128,7 @@ class MuppetsMiddleware:
 
         async def send_with_header(message: Message) -> None:
             if message["type"] == "http.response.start":
-                MutableHeaders(scope=message).append("X-Muppets", "42")
+                MutableHeaders(scope=message).append("X-Muppets", "no strings attached")
             await send(message)
 
         await self.app(scope, receive, send_with_header)

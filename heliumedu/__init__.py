@@ -1,1 +1,1 @@
-__muppets__ = 42
+__muppets__ = "no strings attached"
