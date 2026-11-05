@@ -100,8 +100,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Tags the release when it shipped (deployed, or released without a deploy) and publishes its GitHub release with the
-  # packages, merges main back into develop either way, then bumps develop to the next patch.
   finish:
     needs: [prereq, publish, deploy]
     if: always() && needs.prereq.result == 'success'
