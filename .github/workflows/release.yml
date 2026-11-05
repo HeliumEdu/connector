@@ -18,7 +18,7 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  actions: write
   issues: none
   pull-requests: none
 
@@ -72,25 +72,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ secrets.HELIUM_BOT_APP_ID }}
-          private-key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
-          skip-token-revoke: true
-
       - name: Run the deploy workflow and wait for it
+        id: wait-for-deploy
         uses: alexdlaird/shipshape/run-workflow@v1
         with:
           workflow: deploy.yml
           ref: develop
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
           timeout-minutes: 25
           inputs: |
             version_type=specific
             specific_version=${{ needs.prereq.outputs.version }}
             ref=${{ needs.prereq.outputs.squash_commit_sha }}
+
+      - name: Deployment trigger summary
+        if: always()
+        env:
+          VERSION: ${{ needs.prereq.outputs.version }}
+          RUN_URL: ${{ steps.wait-for-deploy.outputs.run-url }}
+        run: |
+          {
+            echo "### Deploy Workflow Triggered"
+            echo ""
+            echo "- **Version**: $VERSION"
+            if [ -n "$RUN_URL" ]; then
+              echo "- **Run**: $RUN_URL"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Tags the release when it shipped (deployed, or released without a deploy) and publishes its GitHub release with the
   # packages, merges main back into develop either way, then bumps develop to the next patch.

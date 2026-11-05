@@ -35,16 +35,6 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     :param transport: How requests reach Helium (the network unless given).
     :return: The app.
     """
-    if settings.sentry_dsn:
-        import sentry_sdk
-        from sentry_sdk.integrations.httpx import HttpxIntegration
-        from sentry_sdk.integrations.httpx2 import Httpx2Integration
-
-        # Frame locals and request URLs carry students' planner content and search text
-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.environment, release=__version__,
-                        send_default_pii=False, include_local_variables=False,
-                        disabled_integrations=[HttpxIntegration(), Httpx2Integration()])
-
     server = create_server(settings, transport)
     security = TransportSecuritySettings(enable_dns_rebinding_protection=bool(settings.allowed_hosts),
                                          allowed_hosts=settings.allowed_hosts)
