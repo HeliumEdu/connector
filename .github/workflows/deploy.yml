@@ -17,6 +17,10 @@ on:
         description: 'Specific version tag (only used if version_type is "specific", ex: 1.2.3)'
         required: false
         type: string
+      ref:
+        description: 'Automation only: the commit to deploy from, before its tag exists (a release tags after deploying). Leave blank for a manual deploy.'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -67,7 +71,7 @@ jobs:
           owner: HeliumEdu
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.determine-version.outputs.version }}
+          ref: ${{ inputs.ref || needs.determine-version.outputs.version }}
       - name: Checkout infra repository
         uses: actions/checkout@v6
         with:

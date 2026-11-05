@@ -36,13 +36,12 @@ jobs:
       bot_app_id: ${{ secrets.HELIUM_BOT_APP_ID }}
       bot_private_key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
 
-  release:
-    name: Release
+  publish:
+    name: Publish Lambda Package
     needs: [prereq]
 
     env:
       VERSION: ${{ needs.prereq.outputs.version }}
-      COMMIT_SHA: ${{ needs.prereq.outputs.squash_commit_sha }}
 
     runs-on: ubuntu-latest
 
@@ -54,16 +53,6 @@ jobs:
           path: build
           run-id: ${{ needs.prereq.outputs.build_run_id }}
           github-token: ${{ github.token }}
-      - name: Name packages for the release
-        run: |
-          mv build/connector.zip "build/connector-$VERSION.zip"
-          mv build/helium-plugin.zip "build/helium-plugin-$VERSION.zip"
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$VERSION" "build/connector-$VERSION.zip" "build/helium-plugin-$VERSION.zip" \
-            --repo "${{ github.repository }}" --target "$COMMIT_SHA" --title "$VERSION" --generate-notes
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -74,12 +63,12 @@ jobs:
         env:
           BUCKET_NAME: heliumedu
         run: |
-          aws s3 cp "build/connector-$VERSION.zip" "s3://${BUCKET_NAME}/helium/connector/connector-$VERSION.zip"
+          aws s3 cp build/connector.zip "s3://${BUCKET_NAME}/helium/connector/connector-$VERSION.zip"
 
   deploy:
     name: Deploy
-    needs: [prereq, release]
-    if: "!cancelled() && inputs.trigger_deploy_after_release && needs.release.result == 'success'"
+    needs: [prereq, publish]
+    if: "!cancelled() && inputs.trigger_deploy_after_release && needs.publish.result == 'success'"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -101,23 +90,26 @@ jobs:
           inputs: |
             version_type=specific
             specific_version=${{ needs.prereq.outputs.version }}
+            ref=${{ needs.prereq.outputs.squash_commit_sha }}
 
-  cleanup:
-    needs: [prereq, release, deploy]
+  # Tags the release when it shipped (deployed, or released without a deploy) and publishes its GitHub release with the
+  # packages, merges main back into develop either way, then bumps develop to the next patch.
+  finish:
+    needs: [prereq, publish, deploy]
     if: always() && needs.prereq.result == 'success'
-    uses: alexdlaird/.github/.github/workflows/release-cleanup.yml@main
+    uses: alexdlaird/.github/.github/workflows/release-finish.yml@main
     with:
-      consolidate_history: ${{ inputs.consolidate_history && needs.release.result == 'success' }}
+      shipped: ${{ needs.publish.result == 'success' && (needs.deploy.result == 'success' || !inputs.trigger_deploy_after_release) }}
+      version: ${{ needs.prereq.outputs.version }}
+      squash_commit_sha: ${{ needs.prereq.outputs.squash_commit_sha }}
       squash_boundary_sha: ${{ needs.prereq.outputs.squash_boundary_sha }}
-      skip_ci: ${{ needs.release.result == 'success' }}
+      build_run_id: ${{ needs.prereq.outputs.build_run_id }}
+      consolidate_history: ${{ inputs.consolidate_history }}
+      version_file: helium_connector/__init__.py
+      version_pattern: 's/^__version__ = ".*"/__version__ = "${VERSION}"/'
+      repo_slug: HeliumEdu/connector
+      github_release: true
+      github_release_artifact: connector-build
     secrets:
       bot_app_id: ${{ secrets.HELIUM_BOT_APP_ID }}
       bot_private_key: ${{ secrets.HELIUM_BOT_PRIVATE_KEY }}
-
-  bump:
-    needs: [release, cleanup]
-    if: always() && needs.release.result == 'success'
-    uses: ./.github/workflows/bump-version.yml
-    with:
-      bump_type: next
-    secrets: inherit
