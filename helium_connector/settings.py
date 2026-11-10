@@ -34,10 +34,6 @@ class Settings:
     #: The secret CloudFront sends as ``X-Origin-Secret``; when set, requests without it are refused, so the public
     #: function URL can't be used around CloudFront.
     origin_secret: str | None = None
-    #: Where errors are reported, if anywhere.
-    sentry_dsn: str | None = None
-    #: The deployment's name, for error reports.
-    environment: str = "prod"
 
     @property
     def resource_url(self) -> str:
@@ -60,6 +56,4 @@ class Settings:
                    connector_url=os.environ.get("HELIUM_CONNECTOR_URL", DEFAULT_CONNECTOR_URL).rstrip("/"),
                    issuer_url=os.environ.get("HELIUM_ISSUER_URL", api_url).rstrip("/"),
                    allowed_hosts=[host.strip() for host in hosts.split(",") if host.strip()],
-                   origin_secret=os.environ.get("HELIUM_ORIGIN_SECRET") or None,
-                   sentry_dsn=os.environ.get("HELIUM_SENTRY_DSN") or None,
-                   environment=os.environ.get("HELIUM_ENVIRONMENT", "prod"))
+                   origin_secret=os.environ.get("HELIUM_ORIGIN_SECRET") or None)

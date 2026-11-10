@@ -43,6 +43,12 @@ jobs:
         run: make check
       - name: Test
         run: make test
+      - name: Upload test coverage
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: ./build/coverage
       - name: Package
         run: make package package-plugin
       - name: Upload release candidate
