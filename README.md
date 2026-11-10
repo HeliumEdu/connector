@@ -60,10 +60,10 @@ HELIUM_API_URL=http://localhost:8000 HELIUM_CONNECTOR_URL=http://127.0.0.1:8001 
 ### Basic Usage
 
 The connector is served at `https://mcp.heliumedu.com/mcp`. Add it to your AI assistant, then sign in to Helium and
-choose **Allow** when it opens in your browser. For a local connector, use `http://127.0.0.1:8001/mcp` instead.
+choose **Allow** when it opens in your browser. For a local connector, use `http://127.0.0.1:8001/mcp` instead. For a
+walkthrough, see [Use AI as a Scheduling Assistant](https://www.heliumedu.com/support/getting-started/where-to-start-with-helium/#use-ai-as-a-scheduling-assistant).
 
-Attach your syllabi and ask your assistant to import the term, or ask about your planner, and it will use the following
-tools:
+Ask your assistant to import a term from your syllabi, or about your planner, and it will use the following tools:
 
 | Tool                     | Access | Returns                                                                               |
 |--------------------------|--------|---------------------------------------------------------------------------------------|
@@ -78,59 +78,20 @@ tools:
 | `list_resources`         | Read   | Resources by resource group, with status, price, and the classes each is for          |
 | `get_grades`             | Read   | Grades and trends, per class and category, or the score a class needs for a grade     |
 
+Each tool's JSON Schema, served by the connector, describes its inputs.
+
 #### Permissions
 
-Signing in grants two scopes, shown on Helium's consent screen:
-
-- `planner:read`: every read tool.
-- `planner:import`: `preview_import_term`, `import_term`, `preview_import_ics`, and `import_ics`.
-
-`import_term` and `import_ics` are the only writes, and none is sensitive: no tool sends messages, makes payments, or
-changes or deletes anything. `import_term` adds a new term (its classes, meeting times, grading categories,
-assignments, and events), or classes to a term already in Helium, and `import_ics` adds a calendar file's entries (as
-a class's assignments, or as events), each in a single transaction, so a failed import saves nothing. `import_term`
-refuses a new term whose title and dates are already in Helium, or a class already in the term, unless
-`allow_duplicates` is set. The previews check the same import with Helium without saving it.
-
-#### Inputs
-
-- `preview_import_term`, `import_term`: `plan` (the term, or `{"id": ...}` for one already in Helium, from
-  `list_classes`; its classes; and its events, with local dates and times), `allow_duplicates`.
-- `preview_import_ics`, `import_ics`: `ics` (the `.ics` file's text), `class_id` (unset imports the entries as
-  events). Helium reads the calendar: repeating entries are expanded and cancelled ones left out.
-- `list_assignments`: `start_date`, `end_date`, `class_id`, `status` (`all`, `incomplete`, `completed`, `overdue`),
-  `category_id`, `query`, `limit` (1-100, default 25), `page`.
-- `list_events`: `start_date`, `end_date`, `query`, `limit` (1-100, default 25), `page`.
-- `list_notes`: `query`, `class_id`, `assignment_id`, `event_id`, `resource_id`, `limit` (1-10, default 5), `page`.
-- `list_classes`: `include_past_terms`.
-- `get_grades`: `include_past_terms`; or `target_grade` with `class_id` and `target_id` (in a weighted class, a category
-  down to its last ungraded assignment; otherwise, an ungraded assignment) for the score Helium calculates the class
-  needs.
-- `list_resources`: `class_id`.
-
-Each tool's JSON Schema, served by the connector, describes every field. Dates and times are local to the time zone
-set in the user's Helium account. A window covers at most 366 days. Lists return results a page at a time, with
-`total` and `has_more`.
-
-For assistants that offer prompts, the `import_syllabi` prompt walks through a term's import: gathering every
-syllabus, asking the student about anything the syllabi leave unclear, and previewing before importing. The
-`plan_study_time` prompt suggests what to work on with the time the student has, from their planner and grades.
-
-#### Errors and Limits
-
-- A plan Helium can't accept returns `problems`, each naming the class, assignment, or event it's about, rather than an
-  error. Details worth checking, such as category weights that don't add up to 100%, return as `warnings`, and what
-  the plan leaves unset that the student likely knows, such as a class's credits, returns as `to_confirm`.
-- A signed-out connection, or one not given access for a tool, returns an error asking the user to reconnect.
-- Requests share the user's Helium API rate limit (130 requests per minute). Past it, the error says how many seconds
-  to wait.
+Signing in grants the `planner:read` and `planner:import` scopes, shown on Helium's consent screen and described in
+its [API documentation](https://api.heliumedu.com/docs/). `import_term` and `import_ics` are the only writes, and they
+only add to Helium: no tool sends messages, makes payments, or changes or deletes anything.
 
 ### Plugin Package
 
 `plugin/` is the connector as an [Agent Plugins](https://agent-plugins.org) package: `plugin.json`, and `mcp.json`
-pointing at `https://mcp.heliumedu.com/mcp`. ChatGPT's listing, review cases, and release notes live under
-`extensions.com.openai`. Each release attaches it as `helium-plugin-<version>.zip`, with `version` set to the
-connector's; to build it locally, execute:
+pointing at `https://mcp.heliumedu.com/mcp`. A plugin directory's listing, review cases, and release notes live under
+its key in `plugin.json`'s `extensions`. Each release attaches it as `helium-plugin-<version>.zip`, with `version`
+set to the connector's; to build it locally, execute:
 
 ```sh
 make package-plugin
