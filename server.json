@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.heliumedu/connector",
+  "title": "Helium - Student Planner",
+  "description": "Import a term from syllabi into Helium, a free student planner, and ask about what's due and grades.",
+  "version": "1.0.0",
+  "websiteUrl": "https://www.heliumedu.com/",
+  "repository": {
+    "url": "https://github.com/HeliumEdu/connector",
+    "source": "github",
+    "id": "1437758972"
+  },
+  "icons": [
+    {
+      "src": "https://www.heliumedu.com/icon-512.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.heliumedu.com/mcp"
+    }
+  ]
+}

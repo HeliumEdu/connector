@@ -80,6 +80,13 @@ Ask your assistant to import a term from your syllabi, or about your planner, an
 
 Each tool's JSON Schema, served by the connector, describes its inputs.
 
+For assistants that offer prompts, these are listed alongside the tools:
+
+| Prompt            | Does                                                                          |
+|-------------------|-------------------------------------------------------------------------------|
+| `import_syllabi`  | Sets up a term from your syllabi, asking about anything they leave unclear    |
+| `plan_study_time` | Suggests what to work on with the time you have, from your planner and grades |
+
 #### Permissions
 
 Signing in grants the `planner:read` and `planner:import` scopes, shown on Helium's consent screen and described in
