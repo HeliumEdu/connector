@@ -100,6 +100,53 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  registry:
+    name: Publish to MCP Registry
+    needs: [prereq, deploy]
+    if: "!cancelled() && needs.deploy.result == 'success'"
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.9
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prereq.outputs.squash_commit_sha }}
+
+      - name: Set the release version in server.json
+        env:
+          VERSION: ${{ needs.prereq.outputs.version }}
+        run: |
+          mkdir -p build
+          jq --arg version "$VERSION" '.version = $version' server.json > build/server.json
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Download and verify mcp-publisher
+        run: |
+          set -euo pipefail
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          base_url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl --fail --location --silent --show-error --output "$archive" "$base_url/$archive"
+          curl --fail --location --silent --show-error --output "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
+          cosign verify-blob \
+            --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${MCP_PUBLISHER_VERSION}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$archive"
+          tar xzf "$archive" mcp-publisher
+
+      - name: Publish to MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish build/server.json
+
   finish:
     needs: [prereq, publish, deploy]
     if: always() && needs.prereq.result == 'success'

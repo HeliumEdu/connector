@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "com.heliumedu/connector",
+  "name": "io.github.HeliumEdu/connector",
   "title": "Helium - Student Planner",
   "description": "Import a term from syllabi into Helium, a free student planner, and ask about what's due and grades.",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "websiteUrl": "https://www.heliumedu.com/",
   "repository": {
     "url": "https://github.com/HeliumEdu/connector",
