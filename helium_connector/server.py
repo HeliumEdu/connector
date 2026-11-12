@@ -10,7 +10,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
-from mcp.types import CallToolResult, InputRequiredResult, Tool, ToolAnnotations
+from mcp.types import CallToolResult, Icon, InputRequiredResult, Tool, ToolAnnotations
 from pydantic import Field, ValidationError
 
 from helium_connector import __version__
@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 #: Where the connector's documentation is.
 DOCS_URL: Final = ("https://www.heliumedu.com/support/getting-started/where-to-start-with-helium/"
                    "#use-ai-as-a-scheduling-assistant")
+#: Helium's logo, for clients that show a server's icon.
+ICON_URL: Final = "https://www.heliumedu.com/icon-512.png"
 #: How many days a read covers when no window is given.
 DEFAULT_WINDOW_DAYS: Final = 7
 #: The longest window a read covers, in days.
@@ -147,6 +149,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         title="Helium",
         instructions=INSTRUCTIONS,
         website_url="https://www.heliumedu.com",
+        icons=[Icon(src=ICON_URL, mime_type="image/png", sizes=["512x512"])],
         version=__version__,
         token_verifier=verifier,
         # subscriptions/listen answers with a long-lived stream, which a stateless Lambda answering in JSON can't hold
