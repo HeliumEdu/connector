@@ -10,7 +10,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -20,7 +20,8 @@ from helium_connector.settings import MCP_PATH, SCOPES, Settings
 
 logger = logging.getLogger(__name__)
 
-#: Files served as plain text at ``/.well-known/<name>``, such as a domain verification token.
+#: Files served at ``/.well-known/<name>``, such as a domain verification token: ``.json`` files as JSON, others as
+#: plain text.
 WELL_KNOWN_DIR: Final = Path(__file__).resolve().parent / "well_known"
 
 
@@ -56,7 +57,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     app.router.routes.append(Route("/", _docs, methods=["GET"]))
     app.router.routes.append(Route("/status", _status, methods=["GET"]))
     well_known = sorted(path for path in WELL_KNOWN_DIR.glob("*") if path.is_file() and not path.name.startswith("."))
-    app.router.routes.extend(Route(f"/.well-known/{path.name}", _answers(path.read_text().strip()), methods=["GET"])
+    app.router.routes.extend(Route(f"/.well-known/{path.name}", _answers(path), methods=["GET"])
                              for path in well_known)
     app.add_middleware(ScopeChallengeMiddleware)
     if settings.origin_secret:
@@ -135,9 +136,12 @@ async def _docs(request: Request) -> Response:
     return RedirectResponse(DOCS_URL, status_code=302)
 
 
-def _answers(text: str) -> Callable[[Request], Awaitable[Response]]:
+def _answers(path: Path) -> Callable[[Request], Awaitable[Response]]:
+    text = path.read_text().strip()
+    media_type = "application/json" if path.suffix == ".json" else "text/plain"
+
     async def answer(request: Request) -> Response:
-        return PlainTextResponse(text)
+        return Response(text, media_type=media_type)
 
     return answer
 
