@@ -1,24 +1,21 @@
 import json
 import math
-from datetime import date, datetime, time, timedelta
+from datetime import MAXYEAR, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from itertools import takewhile
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 from dateutil.parser import isoparse
+from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 
 from helium_connector.models import WEEKDAYS
+from helium_connector.platform_enums import NO_GRADE, RECURRENCE_HORIZON_YEARS, RESOURCE_CONDITIONS, RESOURCE_STATUSES
 
-#: The most characters of one note's text a result carries.
 MAX_NOTE_CHARS: Final = 4000
-#: Helium's sentinel for "no grade yet".
-NO_GRADE: Final = -1
-#: A resource's ``status``, by value.
-RESOURCE_STATUSES: Final = ("Owned", "Rented", "Ordered", "Shipped", "Need", "Received", "To Sell", "Digital")
-#: A resource's ``condition``, by value.
-RESOURCE_CONDITIONS: Final = ("Brand New", "Refurbished", "Used - Like New", "Used - Very Good", "Used - Good",
-                              "Used - Acceptable", "Used - Poor", "Broken", "Digital")
+
+_GREGORIAN_CYCLE_YEARS: Final = 400
 
 
 def shape_classes(course_groups: list[dict[str, Any]],
@@ -61,7 +58,8 @@ def shape_assignments(homework: list[dict[str, Any]],
                       course_groups: list[dict[str, Any]],
                       time_zone: ZoneInfo) -> list[dict[str, Any]]:
     """
-    Trim assignments to what a student asks about, with times in their time_zone.
+    Trim assignments to what a student asks about, with times in their time_zone. A repeating assignment is listed
+    once per occurrence.
 
     :param homework: ``GET /planner/homework/``.
     :param courses: ``GET /planner/courses/``, to name each assignment's class.
@@ -73,22 +71,28 @@ def shape_assignments(homework: list[dict[str, Any]],
     courses_by_id = {course["id"]: course for course in courses}
     term_titles = {group["id"]: group["title"] for group in course_groups}
     category_titles = {category["id"]: category["title"] for category in categories}
-    return [{
-        "id": item["id"],
-        "title": item["title"],
-        "class": courses_by_id.get(item.get("course"), {}).get("title"),
-        "class_id": item.get("course"),
-        "term": term_titles.get(courses_by_id.get(item.get("course"), {}).get("course_group")),
-        "category": category_titles.get(item.get("category")),
-        "due": (isoparse(item["start"]).astimezone(time_zone).date().isoformat() if item.get("all_day")
-                else _local(item["start"], time_zone)),
-        "end": _local(item["end"], time_zone) if item.get("show_end_time") and not item.get("all_day") else None,
-        "all_day": bool(item.get("all_day")),
-        "completed": bool(item.get("completed")),
-        "grade": (None if not item.get("current_grade") or str(item["current_grade"]).startswith(f"{NO_GRADE}/")
-                  else str(item["current_grade"])),
-        "priority": item.get("priority"),
-    } for item in homework]
+    assignments = []
+    for item in homework:
+        begins = isoparse(item["start"]).astimezone(time_zone)
+        for due in _occurrence_starts(item, begins):
+            assignments.append({
+                "id": item["id"],
+                "title": item["title"],
+                "class": courses_by_id.get(item.get("course"), {}).get("title"),
+                "class_id": item.get("course"),
+                "term": term_titles.get(courses_by_id.get(item.get("course"), {}).get("course_group")),
+                "category": category_titles.get(item.get("category")),
+                "due": due.date().isoformat() if item.get("all_day") else due.isoformat(),
+                "end": ((due + (isoparse(item["end"]) - begins)).isoformat()
+                        if item.get("show_end_time") and not item.get("all_day") else None),
+                "all_day": bool(item.get("all_day")),
+                "completed": bool(item.get("completed")),
+                "grade": (None if not item.get("current_grade")
+                          or str(item["current_grade"]).startswith(f"{NO_GRADE}/") else str(item["current_grade"])),
+                "priority": item.get("priority"),
+                "repeats": bool(item.get("recurrence_rule")),
+            })
+    return assignments
 
 
 def due_between(assignments: list[dict[str, Any]], start: date, end: date) -> list[dict[str, Any]]:
@@ -120,7 +124,7 @@ def expand_events(events: list[dict[str, Any]], start: date, end: date, time_zon
     for event in events:
         begins = isoparse(event["start"]).astimezone(time_zone)
         duration = isoparse(event["end"]) - isoparse(event["start"])
-        for occurrence in _event_starts(event, begins, window_start, window_end):
+        for occurrence in _occurrence_starts(event, begins, window_start, window_end):
             if occurrence < window_end and (occurrence >= window_start or occurrence + duration > window_start):
                 occurrences.append({
                     "id": event["id"],
@@ -135,24 +139,33 @@ def expand_events(events: list[dict[str, Any]], start: date, end: date, time_zon
     return sorted(occurrences, key=lambda occurrence: occurrence["start"])
 
 
-def shape_grades(grades: dict[str, Any], term_ids: set[int] | None = None) -> list[dict[str, Any]]:
+def shape_grades(grades: dict[str, Any], term_ids: set[int] | None = None) -> dict[str, Any]:
     """
-    Trim Helium's grade tree to terms, classes, and categories (grades as percentages, ``None`` when nothing is
-    graded yet; trends as the app's arrows: up, down, or steady).
+    Trim Helium's grade tree to terms, classes, and categories (grades as percentages, GPAs and grade points on the
+    term's grade scale, ``None`` when there is none; trends as the app's arrows: up, down, or steady).
 
     :param grades: ``GET /planner/grades/``.
-    :param term_ids: Only these terms, if given.
-    :return: The terms.
+    :param term_ids: Only these terms, if given; ``cumulative_gpa`` still covers every term.
+    :return: The terms and ``cumulative_gpa``.
     """
-    return [{
+    terms = [{
         "id": group["id"],
         "title": group["title"],
         "overall_grade": _grade(group.get("overall_grade")),
+        "gpa": _grade(group.get("gpa")),
+        "counts_toward_cumulative_gpa": bool(group.get("in_cumulative_gpa")),
+        "grade_scale": [{
+            "label": band["label"] or None,
+            "min_grade": band["min_grade"],
+            "grade_point": band["grade_point"],
+        } for band in group["grade_scale"]],
         "trend": _trend(group.get("trend")),
         "classes": [{
             "id": course["id"],
             "title": course["title"],
             "overall_grade": _grade(course.get("overall_grade")),
+            "grade_point": _grade(course.get("grade_point")),
+            "credits": course.get("credits"),
             "trend": _trend(course.get("trend")),
             "weighted": bool(course.get("has_weighted_grading")),
             "graded_assignments": course.get("num_homework_graded"),
@@ -170,6 +183,8 @@ def shape_grades(grades: dict[str, Any], term_ids: set[int] | None = None) -> li
             } for category in course.get("categories", [])],
         } for course in group.get("courses", [])],
     } for group in grades.get("course_groups", []) if term_ids is None or group["id"] in term_ids]
+
+    return {"terms": terms, "cumulative_gpa": _grade(grades.get("cumulative_gpa"))}
 
 
 def shape_needed_grade(needed: dict[str, Any]) -> dict[str, Any]:
@@ -350,17 +365,44 @@ def describe_numbered_days(days: list[int]) -> str:
     return f"Days {', '.join(map(str, days[:-1]))}, and {days[-1]}"
 
 
-def _event_starts(event: dict[str, Any],
-                  begins: datetime,
-                  window_start: datetime,
-                  window_end: datetime) -> list[datetime]:
-    rule = event.get("recurrence_rule")
+def occurs_within_horizon(rule: str, dtstart: datetime) -> bool:
+    """
+    Whether ``rule`` from ``dtstart`` has an occurrence within ``RECURRENCE_HORIZON_YEARS``, ignoring its ``COUNT``
+    and ``UNTIL``.
+
+    A rule that never produces a date (e.g. ``FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30``) is checked within one 400-year
+    Gregorian cycle rather than searched through year 9999.
+
+    :param rule: The RRULE, bare or ``RRULE:`` prefixed.
+    :param dtstart: The series' first occurrence start.
+    :raises ValueError: If ``rule`` isn't an RRULE.
+    """
+    body = rule.strip()
+    if body.upper().startswith("RRULE:"):
+        body = body[6:]
+    parts = [part for part in body.split(";") if part.split("=")[0].strip().upper() not in ("COUNT", "UNTIL")]
+    cycles = (MAXYEAR - RECURRENCE_HORIZON_YEARS - dtstart.year) // _GREGORIAN_CYCLE_YEARS
+    probe_start = dtstart.replace(year=dtstart.year + cycles * _GREGORIAN_CYCLE_YEARS, tzinfo=None)
+    first = next(iter(rrulestr(";".join(parts), dtstart=probe_start)), None)
+    return first is not None and first < probe_start + relativedelta(years=RECURRENCE_HORIZON_YEARS)
+
+
+def _occurrence_starts(item: dict[str, Any],
+                       begins: datetime,
+                       window_start: datetime | None = None,
+                       window_end: datetime | None = None) -> list[datetime]:
+    rule = item.get("recurrence_rule")
     if not rule:
         return [begins]
+    if not occurs_within_horizon(rule, begins):
+        return []
     series = rrulestr(rule, dtstart=begins, forceset=True)
-    for exception in event.get("exception_dates") or []:
+    for exception in item.get("exception_dates") or []:
         series.exdate(isoparse(exception).astimezone(begins.tzinfo))
-    return list(series.between(window_start - timedelta(days=1), window_end, inc=True))
+    horizon = datetime.now(begins.tzinfo) + relativedelta(years=RECURRENCE_HORIZON_YEARS)
+    if window_start is None or window_end is None:
+        return list(takewhile(lambda occurrence: occurrence <= horizon, series))
+    return list(series.between(window_start - timedelta(days=1), min(window_end, horizon), inc=True))
 
 
 def _local(value: str, time_zone: ZoneInfo) -> str:
@@ -371,14 +413,15 @@ def _label(labels: tuple[str, ...], value: Any) -> str | None:
     return labels[value] if isinstance(value, int) and 0 <= value < len(labels) else None
 
 
-def _as_shown(value: float) -> float:
+def _as_shown(value: float, places: int = 1) -> float:
     """
-    Round to one decimal as the app displays it: ``intl``'s ``NumberFormat`` rounds the fraction alone, in tenths,
+    Round as the app displays it: ``intl``'s ``NumberFormat`` rounds the fraction alone, in units of the last place,
     with a tie away from zero.
     """
+    factor = 10 ** places
     whole = math.floor(abs(value))
-    tenths = Decimal((abs(value) - whole) * 10).quantize(Decimal(1), rounding=ROUND_HALF_UP)
-    return math.copysign(whole + float(tenths) / 10, value)
+    fraction = Decimal((abs(value) - whole) * factor).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    return math.copysign(whole + float(fraction) / factor, value)
 
 
 def _trend(value: Any) -> str | None:
@@ -392,4 +435,4 @@ def _grade(value: Any) -> float | None:
     if value is None:
         return None
     grade = float(value)
-    return None if grade == NO_GRADE else round(grade, 2)
+    return None if grade == NO_GRADE else _as_shown(grade, places=2)

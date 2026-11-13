@@ -1,34 +1,34 @@
 import re
 from collections import Counter
-from collections.abc import Iterable, Iterator
-from itertools import islice
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from itertools import islice
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
+from dateutil.relativedelta import relativedelta
+from dateutil.rrule import rrulestr
+
 from helium_connector.models import WEEKDAYS, Course, CourseGroup, CycleSlot, DayCycleSchedule, Event, Homework, \
     Meeting, Schedule, TermPlan, Weekday, WeekRotationSchedule
-from helium_connector.reads import describe_numbered_days
+from helium_connector.platform_enums import RECURRENCE_HORIZON_YEARS, UNGRADED
+from helium_connector.reads import describe_numbered_days, occurs_within_horizon
 
-#: The most classes one import takes.
-MAX_COURSES: Final = 20
-#: The most assignments one import takes, across all classes.
 MAX_ASSIGNMENTS: Final = 1000
-#: The most events one import takes, after repeats are expanded.
 MAX_EVENTS: Final = 500
-#: The longest a repeating event can span, in days (a school year).
-MAX_REPEAT_DAYS: Final = 366
-#: The grade Helium stores for an item that hasn't been graded.
-UNGRADED: Final = "-1/100"
 
+_MAX_EXPANDED_OCCURRENCES = max(MAX_ASSIGNMENTS, MAX_EVENTS) + 1
 _ROW_ERROR = re.compile(r"^(?P<section>\w+) id (?P<row_id>\d+), (?P<field>\w+): (?P<message>.+)$", re.DOTALL)
-#: Import sections a plan fills, by the name the student knows them by.
 _SECTION_NAMES = {"course_groups": "terms", "courses": "classes", "course_schedules": "schedules",
                   "categories": "categories", "homework": "assignments", "events": "events"}
 _SHORT_DAYS = {"sunday": "Sun", "monday": "Mon", "tuesday": "Tue", "wednesday": "Wed", "thursday": "Thu",
                "friday": "Fri", "saturday": "Sat"}
+_ICAL_SHORT_DAYS = {day[:2].upper(): short for day, short in _SHORT_DAYS.items()}
+_FREQUENCIES = {"DAILY": ("daily", "days"), "WEEKLY": ("weekly", "weeks"), "MONTHLY": ("monthly", "months"),
+                "YEARLY": ("yearly", "years")}
+_LOCAL_UNTIL = re.compile(r"^\d{8}$")
 
 
 @dataclass(frozen=True)
@@ -53,30 +53,21 @@ def validate(plan: TermPlan) -> list[str]:
     problems: list[str] = []
     course_group = plan.course_group
 
-    if course_group.start_date > course_group.end_date:
-        problems.append(f"Term '{course_group.title}': its start date ({course_group.start_date}) is after its end "
-                        f"date ({course_group.end_date}).")
-    problems += _dates_outside("Term", course_group.title, "no-class date", course_group.no_class_dates,
-                               course_group.start_date, course_group.end_date)
-
-    if len(plan.courses) > MAX_COURSES:
-        problems.append(f"The plan has {len(plan.courses)} classes; one import takes at most {MAX_COURSES}.")
-    homework_count = sum(len(course.homework) for course in plan.courses)
-    if homework_count > MAX_ASSIGNMENTS:
-        problems.append(f"The plan has {homework_count} assignments; one import takes at most "
-                        f"{MAX_ASSIGNMENTS}.")
-
     for course in plan.courses:
         problems += _validate_course(course, plan)
-    event_problems = [problem for event in plan.events for problem in _validate_event(event)]
-    problems += event_problems
+    for event in plan.events:
+        problems += _validate_event(event, course_group)
 
-    # Only bounded repeats are expanded, and the count stops just past the cap
-    if not event_problems:
-        expanded = (day for event in plan.events for day in occurrences(event, course_group.no_class_dates))
-        if sum(1 for _ in islice(expanded, MAX_EVENTS + 1)) > MAX_EVENTS:
-            problems.append(f"The plan's events come to more than {MAX_EVENTS} after repeats; one import takes at "
-                            f"most {MAX_EVENTS}.")
+    dues = (day for course in plan.courses for homework in course.homework
+            for day in occurrences(homework, _no_class_dates(course, plan), _course_dates(course, plan)[1]))
+    if sum(1 for _ in islice(dues, MAX_ASSIGNMENTS + 1)) > MAX_ASSIGNMENTS:
+        problems.append(f"The plan has more than {MAX_ASSIGNMENTS} assignments, counting each repeating occurrence; "
+                        f"the connector imports at most {MAX_ASSIGNMENTS} at once.")
+    expanded = (day for event in plan.events
+                for day in occurrences(event, course_group.no_class_dates, course_group.end_date))
+    if sum(1 for _ in islice(expanded, MAX_EVENTS + 1)) > MAX_EVENTS:
+        problems.append(f"The plan has more than {MAX_EVENTS} events, counting each repeating occurrence; "
+                        f"the connector imports at most {MAX_EVENTS} at once.")
 
     return problems
 
@@ -100,9 +91,10 @@ def warnings(plan: TermPlan) -> list[str]:
                          f"Uncategorized.")
 
     for event in plan.events:
-        last = event.repeat.until if event.repeat else event.start_date
+        days = occurrences(event, (), course_group.end_date)
+        last = days[-1] if days else event.start_date
         if event.start_date < course_group.start_date or last > course_group.end_date:
-            dates = f"on {event.start_date}" if event.repeat is None else f"{event.start_date} to {event.repeat.until}"
+            dates = f"on {event.start_date}" if last == event.start_date else f"{event.start_date} to {last}"
             notes.append(f"Event '{event.title}' ({dates}) falls outside the term "
                          f"({course_group.start_date} to {course_group.end_date}).")
     return notes
@@ -119,7 +111,7 @@ def to_confirm(plan: TermPlan) -> list[str]:
     for course in plan.courses:
         name = f"Class '{course.title}'"
         if course.credits is None:
-            gaps.append(f"{name}: credits aren't set, so it imports with 0 credits.")
+            gaps.append(f"{name}: credits aren't set, so it imports with 0 credits and isn't counted in GPA.")
         if not course.schedules and not course.is_online:
             gaps.append(f"{name}: no meeting times, so it won't show on the calendar.")
         if course.schedules and not course.is_online and not course.room:
@@ -158,7 +150,9 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
     """
     courses = []
     for course in plan.courses:
-        dues = sorted(homework.due_date for homework in course.homework)
+        skip, last_day = _no_class_dates(course, plan), _course_dates(course, plan)[1]
+        due_days = [(homework, occurrences(homework, skip, last_day)) for homework in course.homework]
+        dues = sorted(day for _, days in due_days for day in days)
         points_based = bool(course.categories) and all(category.weight == 0 for category in course.categories)
         courses.append({
             "title": course.title,
@@ -166,13 +160,16 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
             "grading": None if not course.categories else "points-based" if points_based else "weighted",
             "categories": [category.title if points_based else f"{category.title} ({category.weight}%)"
                            for category in course.categories],
-            "assignments": len(course.homework),
+            "assignments": len(dues),
+            "repeating": [{"title": homework.title, "repeats": describe_rule(homework.recurrence_rule),
+                           "assignments": len(days)}
+                          for homework, days in due_days if homework.recurrence_rule],
             "first_due": dues[0].isoformat() if dues else None,
             "last_due": dues[-1].isoformat() if dues else None,
         })
     listed_events = []
     for event in plan.events:
-        days = list(occurrences(event, plan.course_group.no_class_dates))
+        days = occurrences(event, plan.course_group.no_class_dates, plan.course_group.end_date)
         listed_events.append({
             "title": event.title,
             "time": f"{event.start_time:%H:%M}" + (f"-{event.end_time:%H:%M}" if event.end_time else "")
@@ -180,6 +177,7 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
             "first": days[0].isoformat() if days else None,
             "last": days[-1].isoformat() if days else None,
             "occurrences": len(days),
+            "repeats": describe_rule(event.recurrence_rule) if event.recurrence_rule else None,
         })
     return {
         "term": {"title": plan.course_group.title, "start_date": plan.course_group.start_date.isoformat(),
@@ -189,7 +187,7 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
         "events": listed_events,
         "totals": {"classes": len(plan.courses),
                    "categories": sum(len(course.categories) for course in plan.courses),
-                   "assignments": sum(len(course.homework) for course in plan.courses),
+                   "assignments": sum(course["assignments"] for course in courses),
                    "events": sum(event["occurrences"] for event in listed_events)},
     }
 
@@ -197,7 +195,9 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
 def build_import(plan: TermPlan, time_zone: ZoneInfo) -> ImportPayload:
     """
     Convert a valid plan to Helium's import format: ids assigned, schedules packed, local times made timezone-aware
-    in the student's time zone, repeating events expanded.
+    in the student's time zone. A repeating event or assignment is one row anchored on its first occurrence, its
+    ``recurrence_rule`` given a UTC ``UNTIL`` and its occurrences on no-class dates as ``exception_dates``; Helium
+    expands it.
 
     :param plan: A plan with no problems.
     :param time_zone: The student's time zone (their Helium setting).
@@ -242,20 +242,23 @@ def build_import(plan: TermPlan, time_zone: ZoneInfo) -> ImportPayload:
                                        "weight": f"{category.weight:.2f}"})
             labels[("categories", category_id)] = f"Category '{category.title}' ({course.title})"
 
+        skip = _no_class_dates(course, plan)
         for homework in course.homework:
             homework_id = len(data["homework"]) + 1
             homework_category = category_ids.get(homework.category.casefold()) if homework.category else None
             data["homework"].append({"id": homework_id, "course": course_id, "category": homework_category,
                                      "title": homework.title, "current_grade": UNGRADED,
-                                     **_timing(homework.due_date, homework.due_time, homework.end_time, time_zone)})
-            labels[("homework", homework_id)] = f"Assignment '{homework.title}' ({course.title})"
+                                     **_item_timing(homework, skip, end_date, time_zone)})
+            repeats = f" repeating from {homework.due_date.isoformat()}" if homework.recurrence_rule else ""
+            labels[("homework", homework_id)] = f"Assignment '{homework.title}' ({course.title}){repeats}"
 
     for event in plan.events:
-        for day in occurrences(event, course_group.no_class_dates):
-            event_id = len(data["events"]) + 1
-            data["events"].append({"id": event_id, "title": event.title,
-                                   **_timing(day, event.start_time, event.end_time, time_zone)})
-            labels[("events", event_id)] = f"Event '{event.title}' on {day.isoformat()}"
+        event_id = len(data["events"]) + 1
+        data["events"].append({"id": event_id, "title": event.title,
+                               **_item_timing(event, set(course_group.no_class_dates), course_group.end_date,
+                                              time_zone)})
+        when = "repeating from" if event.recurrence_rule else "on"
+        labels[("events", event_id)] = f"Event '{event.title}' {when} {event.start_date.isoformat()}"
 
     return ImportPayload(data, labels)
 
@@ -282,24 +285,131 @@ def describe_import(plan: TermPlan,
     }
 
 
-def occurrences(event: Event, skip: Iterable[date]) -> Iterator[date]:
+def occurrences(item: Event | Homework, skip: Iterable[date], last_day: date) -> list[date]:
     """
-    The dates an event falls on: its date, or every repeat day through its ``until``.
+    The dates an event or assignment falls on: its date, or every occurrence of its ``recurrence_rule`` within
+    ``RECURRENCE_HORIZON_YEARS`` of that date, at most ``_MAX_EXPANDED_OCCURRENCES`` of them. A rule without ``COUNT``
+    or ``UNTIL`` is followed through ``last_day``. A rule that can't be read counts as just the item's date.
 
-    :param event: The event.
-    :param skip: Dates a repeating event doesn't fall on (the term's no-class dates).
+    :param item: The event or assignment.
+    :param skip: Dates no occurrence falls on (no-class dates).
+    :param last_day: The last day an open-ended rule is followed through.
     :return: The dates, in order.
     """
-    if event.repeat is None:
-        yield event.start_date
-        return
-    days = {WEEKDAYS.index(day) for day in event.repeat.days}
+    try:
+        days = _rule_dates(item, last_day)
+    except _UnreadableRule:
+        return [_first_date(item)]
     skipped = set(skip)
-    day = event.start_date
-    while day <= event.repeat.until:
-        if (day.weekday() + 1) % 7 in days and day not in skipped:
-            yield day
-        day += timedelta(days=1)
+    return [day for day in days if day not in skipped] if item.recurrence_rule else days
+
+
+def describe_rule(rule: str) -> str:
+    """
+    A short description of a plan's ``recurrence_rule``, e.g. "every 2 weeks on Mon, Wed until 2026-12-11".
+
+    :param rule: The rule, in the plan's local terms.
+    :return: The description, or the rule itself when it isn't one the description covers.
+    """
+    parts = _rule_parts(rule)
+    frequency = _FREQUENCIES.get(parts.get("FREQ", ""))
+    if frequency is None:
+        return rule
+    interval = int(parts["INTERVAL"]) if parts.get("INTERVAL", "").isdigit() else 1
+    description = frequency[0] if interval == 1 else f"every {interval} {frequency[1]}"
+    if parts.get("BYDAY"):
+        description += " on " + ", ".join(_ICAL_SHORT_DAYS.get(day, day) for day in parts["BYDAY"].split(","))
+    if parts.get("BYMONTHDAY") == "-1":
+        description += " on the last day"
+    elif parts.get("BYMONTHDAY"):
+        description += f" on day {parts['BYMONTHDAY']}"
+    if parts.get("COUNT"):
+        description += f", {parts['COUNT']} times"
+    elif parts.get("UNTIL") and _LOCAL_UNTIL.match(parts["UNTIL"]):
+        until = parts["UNTIL"]
+        description += f" until {until[:4]}-{until[4:6]}-{until[6:]}"
+    return description
+
+
+class _UnreadableRule(Exception):
+    pass
+
+
+def _first_date(item: Event | Homework) -> date:
+    return item.start_date if isinstance(item, Event) else item.due_date
+
+
+def _first_time(item: Event | Homework) -> time | None:
+    return item.start_time if isinstance(item, Event) else item.due_time
+
+
+def _rule_parts(rule: str) -> dict[str, str]:
+    body = rule.strip()
+    if body.upper().startswith("RRULE:"):
+        body = body[6:]
+    return {key.strip().upper(): value.strip().upper() for key, _, value in
+            (part.partition("=") for part in body.split(";") if part.strip())}
+
+
+def _rule_dates(item: Event | Homework, last_day: date) -> list[date]:
+    first = _first_date(item)
+    if not item.recurrence_rule:
+        return [first]
+
+    parts = _rule_parts(item.recurrence_rule)
+    if "UNTIL" in parts:
+        if not _LOCAL_UNTIL.match(parts["UNTIL"]):
+            raise _UnreadableRule("has an `UNTIL` that isn't a local date, like 20261211")
+        parts["UNTIL"] += "T235959"
+    open_ended = "COUNT" not in parts and "UNTIL" not in parts
+    body = ";".join(f"{key}={value}" for key, value in parts.items())
+    dtstart = datetime.combine(first, _first_time(item) or time(0))
+    try:
+        rule = rrulestr(body, dtstart=dtstart)
+    except (ValueError, TypeError) as ex:
+        raise _UnreadableRule("isn't an iCal RRULE") from ex
+    if not occurs_within_horizon(body, dtstart):
+        raise _UnreadableRule(f"has no dates within {RECURRENCE_HORIZON_YEARS} years")
+
+    horizon = first + relativedelta(years=RECURRENCE_HORIZON_YEARS)
+    days: list[date] = []
+    for occurrence in islice(rule, _MAX_EXPANDED_OCCURRENCES):
+        if occurrence.date() > horizon or (open_ended and occurrence.date() > last_day):
+            break
+        days.append(occurrence.date())
+    return days
+
+
+def _platform_rule(rule: str, last_day: date, time_zone: ZoneInfo) -> str:
+    parts = _rule_parts(rule)
+    if "COUNT" not in parts and "UNTIL" not in parts:
+        parts["UNTIL"] = f"{last_day:%Y%m%d}"
+    if "UNTIL" in parts:
+        until = datetime.combine(datetime.strptime(parts["UNTIL"], "%Y%m%d").date(), time(23, 59, 59), time_zone)
+        parts["UNTIL"] = f"{until.astimezone(timezone.utc):%Y%m%dT%H%M%SZ}"
+    return ";".join(f"{key}={value}" for key, value in parts.items())
+
+
+def _item_timing(item: Event | Homework, skip: set[date], last_day: date, time_zone: ZoneInfo) -> dict[str, Any]:
+    start = _first_time(item)
+    row = _timing(_first_date(item), start, item.end_time, time_zone)
+    if not item.recurrence_rule:
+        return row
+
+    row["recurrence_rule"] = _platform_rule(item.recurrence_rule, last_day, time_zone)
+    exceptions = [_utc(datetime.combine(day, start or time(0), time_zone))
+                  for day in _rule_dates(item, last_day) if day in skip]
+    if exceptions:
+        row["exception_dates"] = exceptions
+    return row
+
+
+def _utc(moment: datetime) -> str:
+    return f"{moment.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+
+
+def _no_class_dates(course: Course, plan: TermPlan) -> set[date]:
+    return set(course.no_class_dates) | set(plan.course_group.no_class_dates)
 
 
 def explain_platform_errors(errors: Any, labels: dict[tuple[str, int], str]) -> list[str]:
@@ -327,14 +437,11 @@ def _validate_course(course: Course, plan: TermPlan) -> list[str]:
     name = f"Class '{course.title}'"
     start_date, end_date = _course_dates(course, plan)
 
-    if start_date > end_date:
-        problems.append(f"{name}: its start date ({start_date}) is after its end date ({end_date}).")
-    elif start_date < plan.course_group.start_date or end_date > plan.course_group.end_date:
+    if start_date < plan.course_group.start_date or end_date > plan.course_group.end_date:
         problems.append(f"{name}: its dates ({start_date} to {end_date}) fall outside the term "
                         f"({plan.course_group.start_date} to {plan.course_group.end_date}).")
-    problems += _dates_outside("Class", course.title, "no-class date", course.no_class_dates, start_date, end_date)
 
-    no_class_dates = set(course.no_class_dates) | set(plan.course_group.no_class_dates)
+    no_class_dates = _no_class_dates(course, plan)
     for schedule in course.schedules:
         problems += _validate_schedule(name, schedule, start_date, end_date, no_class_dates)
 
@@ -343,12 +450,9 @@ def _validate_course(course: Course, plan: TermPlan) -> list[str]:
         if category.title.casefold() in titles:
             problems.append(f"{name}: category '{category.title}' is listed more than once.")
         titles.add(category.title.casefold())
-    weights = sum((category.weight for category in course.categories), Decimal(0))
-    if weights > 100:
-        problems.append(f"{name}: category weights add up to {weights}%, more than 100%.")
 
     for homework in course.homework:
-        problems += _validate_homework(name, homework, titles, start_date, end_date)
+        problems += _validate_homework(name, homework, titles, start_date, end_date, no_class_dates)
 
     return problems
 
@@ -362,16 +466,12 @@ def _validate_schedule(name: str,
     item = f"{name}, {_schedule_label(schedule)}"
 
     schedule_start, schedule_end = schedule.start_date or start_date, schedule.end_date or end_date
-    if schedule_start > schedule_end:
-        problems.append(f"{item}: its start date ({schedule_start}) is after its end date ({schedule_end}).")
-    elif schedule_start < start_date or schedule_end > end_date:
+    if schedule_start < start_date or schedule_end > end_date:
         problems.append(f"{item}: its dates ({schedule_start} to {schedule_end}) fall outside the class's dates "
                         f"({start_date} to {end_date}).")
 
     if isinstance(schedule, DayCycleSchedule):
-        return problems + _validate_day_cycle(item, schedule, start_date, end_date, no_class_dates)
-    for meeting in schedule.meetings:
-        problems += _validate_meeting(item, meeting)
+        problems += _validate_day_cycle(item, schedule, start_date, end_date, no_class_dates)
     return problems
 
 
@@ -391,33 +491,17 @@ def _validate_day_cycle(item: str,
                         f"{end_date}). Use a Day 1 within the class's dates.")
 
     for slot in schedule.slots:
-        outside = sorted({day for day in slot.cycle_days if not 1 <= day <= schedule.cycle_length})
-        if outside:
-            problems.append(f"{item}: cycle day(s) {', '.join(map(str, outside))} aren't in a "
-                            f"{schedule.cycle_length}-day cycle.")
         if len(set(slot.cycle_days)) != len(slot.cycle_days):
             problems.append(f"{item}: a time slot lists the same cycle day more than once.")
-        if slot.start_time >= slot.end_time:
-            problems.append(f"{item}: the slot on {_describe_cycle_days(schedule, slot.cycle_days)} starts at "
-                            f"{slot.start_time:%H:%M}, which isn't before its end ({slot.end_time:%H:%M}).")
     return problems
-
-
-def _validate_meeting(name: str, meeting: Meeting) -> list[str]:
-    days = ", ".join(_SHORT_DAYS[day] for day in meeting.days)
-    if meeting.start_time == time(0) or meeting.end_time == time(0):
-        return [f"{name}: meeting times on {days} can't start or end at midnight."]
-    if meeting.start_time >= meeting.end_time:
-        return [f"{name}: the meeting on {days} starts at {meeting.start_time:%H:%M}, which isn't before its end "
-                f"({meeting.end_time:%H:%M})."]
-    return []
 
 
 def _validate_homework(name: str,
                        homework: Homework,
                        category_titles: set[str],
                        start_date: date,
-                       end_date: date) -> list[str]:
+                       end_date: date,
+                       no_class_dates: set[date]) -> list[str]:
     problems: list[str] = []
     item = f"{name}, assignment '{homework.title}'"
     if homework.category and homework.category.casefold() not in category_titles:
@@ -425,36 +509,40 @@ def _validate_homework(name: str,
     if not start_date <= homework.due_date <= end_date:
         problems.append(f"{item}: due {homework.due_date}, outside the class's dates ({start_date} to "
                         f"{end_date}).")
-    if homework.end_time is not None:
-        if homework.due_time is None:
-            problems.append(f"{item}: an end time needs a due time.")
-        elif homework.end_time <= homework.due_time:
-            problems.append(f"{item}: its end time ({homework.end_time:%H:%M}) isn't after its due time "
-                            f"({homework.due_time:%H:%M}).")
+    if homework.end_time is not None and homework.due_time is None:
+        problems.append(f"{item}: an end time needs a due time.")
+    if homework.recurrence_rule:
+        repeat_problems = _validate_repeat(item, homework, no_class_dates, end_date)
+        last = occurrences(homework, no_class_dates, end_date)[-1]
+        if not repeat_problems and last > end_date:
+            repeat_problems.append(f"{item}: its recurrence_rule `{homework.recurrence_rule}` has occurrences through "
+                                   f"{last}, outside the class's dates ({start_date} to {end_date}).")
+        problems += repeat_problems
     return problems
 
 
-def _validate_event(event: Event) -> list[str]:
+def _validate_repeat(name: str, item: Event | Homework, skip: set[date], last_day: date) -> list[str]:
+    first, rule = _first_date(item), item.recurrence_rule
+    try:
+        days = _rule_dates(item, last_day)
+    except _UnreadableRule as ex:
+        return [f"{name}: its recurrence_rule `{rule}` {ex}."]
+    if not days or days[0] != first:
+        return [f"{name}: {first} isn't an occurrence of its recurrence_rule `{rule}`; the item's date is its first "
+                f"occurrence."]
+    if all(day in skip for day in days):
+        return [f"{name}: every occurrence of its recurrence_rule `{rule}` falls on a no-class date."]
+    return []
+
+
+def _validate_event(event: Event, course_group: CourseGroup) -> list[str]:
     problems: list[str] = []
     name = f"Event '{event.title}'"
-    if event.end_time is not None:
-        if event.start_time is None:
-            problems.append(f"{name}: an end time needs a start time.")
-        elif event.end_time <= event.start_time:
-            problems.append(f"{name}: its end time ({event.end_time:%H:%M}) isn't after its start time "
-                            f"({event.start_time:%H:%M}).")
-    if event.repeat is not None and event.repeat.until < event.start_date:
-        problems.append(f"{name}: it repeats until {event.repeat.until}, before its first date "
-                        f"({event.start_date}).")
-    elif event.repeat is not None and (event.repeat.until - event.start_date).days > MAX_REPEAT_DAYS:
-        problems.append(f"{name}: it repeats from {event.start_date} until {event.repeat.until}; a repeat can span at "
-                        f"most {MAX_REPEAT_DAYS} days.")
+    if event.end_time is not None and event.start_time is None:
+        problems.append(f"{name}: an end time needs a start time.")
+    if event.recurrence_rule:
+        problems += _validate_repeat(name, event, set(course_group.no_class_dates), course_group.end_date)
     return problems
-
-
-def _dates_outside(kind: str, title: str, what: str, dates: list[date], start: date, end: date) -> list[str]:
-    return [f"{kind} '{title}': {what} {day} is outside {start} to {end}." for day in dates
-            if not start <= day <= end]
 
 
 def _course_dates(course: Course, plan: TermPlan) -> tuple[date, date]:

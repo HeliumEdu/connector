@@ -1,7 +1,7 @@
 import asyncio
 import json
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -13,7 +13,7 @@ from starlette.applications import Starlette
 
 from helium_connector import app as app_module
 from helium_connector.app import create_app
-from helium_connector.models import Course
+from helium_connector.models import Course, Homework
 from helium_connector.server import BEFORE_IMPORT, DOCS_URL
 from helium_connector.settings import Settings
 from tests.testcase import IMPORT_COUNTS, TOKEN, AsyncTestCase, given_a_plan, uploaded_import
@@ -79,7 +79,7 @@ class TestAuthorization(McpTestCase):
         self.assertEqual(401, response.status_code)
         self.assertIn(f'resource_metadata="{CONNECTOR_URL}/.well-known/oauth-protected-resource/mcp"',
                       response.headers["WWW-Authenticate"])
-        self.assertIn('scope="planner:read planner:import"', response.headers["WWW-Authenticate"])
+        self.assertIn('scope="planner:read planner:notes:read planner:import"', response.headers["WWW-Authenticate"])
         self.assertEqual([], self.helium.requests)
 
     async def test_token_helium_refuses_is_challenged(self) -> None:
@@ -97,7 +97,7 @@ class TestAuthorization(McpTestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(f"{CONNECTOR_URL}/mcp", response.json()["resource"])
         self.assertEqual(["https://api.heliumedu.com"], response.json()["authorization_servers"])
-        self.assertEqual(["planner:read", "planner:import"], response.json()["scopes_supported"])
+        self.assertEqual(["planner:read", "planner:notes:read", "planner:import"], response.json()["scopes_supported"])
 
     async def test_subscriptions_are_not_offered(self) -> None:
         # GIVEN
@@ -254,6 +254,23 @@ class TestPreview(McpTestCase):
         self.assertEqual(["Assignment 'Problem Set 1' (BIO 151): title: Ensure this field has no more than 255 "
                           "characters."], result["structuredContent"]["problems"])
 
+    async def test_helium_rejecting_a_recurrence_rule_names_the_assignment(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/", 400,
+                           {"homework": ["homework id 1, recurrence_rule: FREQ=HOURLY is not supported."]})
+        plan = self.plan_arguments(courses=[Course(title="CHEM 101", assignments=[
+            Homework(title="Lab check-in", due_date=date(2026, 9, 2), due_time=time(9),
+                     recurrence_rule="FREQ=HOURLY;COUNT=2")])])
+
+        # WHEN
+        result = await self.call("preview_import_term", plan=plan)
+
+        # THEN
+        self.assertEqual(["Assignment 'Lab check-in' (CHEM 101) repeating from 2026-09-02: recurrence rule: "
+                          "FREQ=HOURLY is not supported."], result["structuredContent"]["problems"])
+        sent = uploaded_import(self.helium.requested("POST", "/importexport/import/")[0])
+        self.assertEqual("FREQ=HOURLY;COUNT=2", sent["homework"][0]["recurrence_rule"])
+
     async def test_existing_term_is_refused(self) -> None:
         # GIVEN
         self.helium.answer("GET", "/planner/coursegroups/", 200,
@@ -311,7 +328,8 @@ class TestImport(McpTestCase):
                          content["created"])
         self.assertEqual(41, content["term_id"])
         self.assertEqual([{"title": "BIO 151", "id": 51}, {"title": "ENG 101", "id": 52}], content["classes"])
-        self.assertIn("Class 'ENG 101': credits aren't set, so it imports with 0 credits.", content["to_confirm"])
+        self.assertIn("Class 'ENG 101': credits aren't set, so it imports with 0 credits and isn't counted in GPA.",
+                      content["to_confirm"])
         self.assertEqual("https://app.heliumedu.com/classes", content["open_in_helium"])
         request = self.helium.requested("POST", "/importexport/import/")[0]
         self.assertNotIn("dry_run", request.url.params)
@@ -494,6 +512,32 @@ class TestImportIcs(McpTestCase):
         self.assertEqual(["No events in the calendar file could be imported."],
                          result["structuredContent"]["problems"])
 
+    async def test_repeat_over_helium_limit_is_a_problem(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 400,
+                           {"homework": "\"Daily log\": A repeating assignment can create at most 366 assignments."})
+
+        # WHEN
+        result = await self.call("import_ics", ics=self.ICS, class_id=52)
+
+        # THEN
+        self.assertEqual({"imported": False,
+                          "problems": ['homework: "Daily log": A repeating assignment can create at most 366 '
+                                       'assignments.']},
+                         result["structuredContent"])
+
+    async def test_each_of_several_unreadable_calendar_details_is_a_problem(self) -> None:
+        # GIVEN
+        self.helium.answer("POST", "/importexport/import/ics/", 400,
+                           {"details": ["Invalid iCalendar in file: a.ics.", "Invalid iCalendar in file: b.ics."]})
+
+        # WHEN
+        result = await self.call("preview_import_ics", ics=self.ICS)
+
+        # THEN
+        self.assertEqual(["Invalid iCalendar in file: a.ics.", "Invalid iCalendar in file: b.ics."],
+                         result["structuredContent"]["problems"])
+
 
 class TestPrompts(McpTestCase):
     async def test_syllabus_prompt(self) -> None:
@@ -537,6 +581,18 @@ class TestPrompts(McpTestCase):
         self.assertIn("When the student asks what's due, include overdue work", instructions)
         self.assertIn("When ungraded work could change how a grade looks, say so.", instructions)
 
+    async def test_get_grades_explains_gpa(self) -> None:
+        # WHEN
+        response = await self.rpc("tools/list")
+
+        # THEN
+        tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
+        self.assertIn("A term has no GPA without a grade scale or a graded class with credits.",
+                      tools["get_grades"]["description"])
+        self.assertIn("cumulative_gpa, across the terms on the same grade scale as the most recent term with one, "
+                      "other than the example schedule.",
+                      tools["get_grades"]["description"])
+
     async def test_get_grades_explains_that_ungraded_work_isnt_counted(self) -> None:
         # WHEN
         response = await self.rpc("tools/list")
@@ -547,7 +603,31 @@ class TestPrompts(McpTestCase):
                       tools["get_grades"]["description"])
 
 
+_FOUR_POINT_SCALE = [{"min_grade": 0.0, "grade_point": 0.0, "label": "F"},
+                     {"min_grade": 80.0, "grade_point": 3.0, "label": "B"},
+                     {"min_grade": 90.0, "grade_point": 4.0, "label": "A"}]
+
+
 class TestReads(McpTestCase):
+    async def test_grades_include_the_cumulative_gpa_across_past_terms(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/", 200, {
+            "course_groups": [{"id": 1, "title": "Spring 2020", "overall_grade": 91, "gpa": 4.0,
+                               "in_cumulative_gpa": True, "grade_scale": _FOUR_POINT_SCALE, "courses": []},
+                              {"id": 2, "title": "Fall 2099", "overall_grade": 81, "gpa": 3.0,
+                               "in_cumulative_gpa": True, "grade_scale": _FOUR_POINT_SCALE, "courses": []}],
+            "cumulative_gpa": 3.5})
+        self.helium.answer("GET", "/planner/coursegroups/", 200,
+                           [{"id": 1, "end_date": "2020-05-01"}, {"id": 2, "end_date": "2099-12-15"}])
+
+        # WHEN
+        result = await self.call("get_grades")
+
+        # THEN
+        content = result["structuredContent"]
+        self.assertEqual([(2, 3.0)], [(term["id"], term["gpa"]) for term in content["terms"]])
+        self.assertEqual(3.5, content["cumulative_gpa"])
+
     async def test_assignments_default_to_the_next_week(self) -> None:
         # GIVEN
         self.helium.answer("GET", "/planner/homework/", 200, [])
@@ -715,6 +795,19 @@ class TestReads(McpTestCase):
         self.assertEqual({"problems": ["target_grade needs class_id and target_id."]}, result["structuredContent"])
         self.assertEqual([], self.helium.requested("GET", "/planner/grades/needed/"))
 
+    async def test_notes_without_access_say_how_to_allow_them(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/notes/", 403, {"detail": "insufficient scope"})
+
+        # WHEN
+        result = await self.call("list_notes", query="mitosis")
+
+        # THEN
+        self.assertTrue(result["isError"])
+        self.assertIn("access to notes", result["content"][0]["text"])
+        self.assertIn("Read your notes", result["content"][0]["text"])
+        self.assertEqual([], self.helium.requested("GET", "/planner/courses/"))
+
     async def test_notes_for_a_class_event_or_resource(self) -> None:
         # GIVEN
         self.helium.answer("GET", "/planner/notes/", 200, {"count": 0, "next": None, "results": []})
@@ -843,7 +936,7 @@ class TestReads(McpTestCase):
 
         # THEN
         self.assertEqual([{"id": 1, "title": "Fall Textbooks", "resources": [
-            {"id": 5, "title": "Campbell Biology", "status": "Need", "condition": "Used - Like New", "website": None,
+            {"id": 5, "title": "Campbell Biology", "status": "Needed", "condition": "Used - Like New", "website": None,
              "price": "$80", "classes": [{"id": 10, "title": "BIO 151"}]}]}],
             result["structuredContent"]["resource_groups"])
 

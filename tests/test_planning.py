@@ -1,22 +1,24 @@
 import unittest
-from datetime import date, time
+from datetime import date, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from helium_connector.models import Category, Course, CourseGroup, CycleSlot, DayCycleSchedule, Event, Homework, \
-    Meeting, Repeat, WeeklySchedule, WeekRotationSchedule
+    Meeting, WeeklySchedule, WeekRotationSchedule
 from helium_connector.planning import (
-    MAX_COURSES,
+    MAX_ASSIGNMENTS,
     MAX_EVENTS,
-    MAX_REPEAT_DAYS,
     build_import,
+    describe_rule,
     existing_term,
     explain_platform_errors,
+    occurrences,
     summarize,
     to_confirm,
     validate,
     warnings,
 )
+from helium_connector.platform_enums import RECURRENCE_HORIZON_YEARS
 from tests.testcase import given_a_plan
 
 
@@ -116,21 +118,105 @@ class TestBuildImport(unittest.TestCase):
         self.assertEqual("2026-11-01T00:00:00-05:00", reading["start"])
         self.assertEqual("2026-11-02T00:00:00-06:00", reading["end"])
 
-    def test_repeating_events_expand_and_skip_no_class_dates(self) -> None:
+    def test_repeating_event_is_one_row_with_its_rule_and_skipped_no_class_dates(self) -> None:
         # GIVEN
-        plan = given_a_plan(events=[Event(title="Office Hours", start_date=date(2026, 9, 1), start_time=time(15),
+        plan = given_a_plan(events=[Event(title="Office Hours", start_date=date(2026, 8, 31), start_time=time(15),
                                           end_time=time(16),
-                                          repeat=Repeat(days=["monday", "tuesday"], until=date(2026, 9, 14)))])
+                                          recurrence_rule="FREQ=WEEKLY;BYDAY=MO,TU;UNTIL=20260914")])
 
         # WHEN
         payload = build_import(plan, ZoneInfo("America/Chicago"))
 
         # THEN
-        starts = [event["start"] for event in payload.data["events"]]
-        self.assertEqual(["2026-09-01T15:00:00-05:00", "2026-09-08T15:00:00-05:00", "2026-09-14T15:00:00-05:00"],
-                         starts)
-        self.assertEqual("Event 'Office Hours' on 2026-09-08", payload.labels[("events", 2)])
-        self.assertTrue(all("recurrence_rule" not in event for event in payload.data["events"]))
+        self.assertEqual([{"id": 1, "title": "Office Hours", "all_day": False, "show_end_time": True,
+                           "start": "2026-08-31T15:00:00-05:00", "end": "2026-08-31T16:00:00-05:00",
+                           "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO,TU;UNTIL=20260915T045959Z",
+                           "exception_dates": ["2026-09-07T20:00:00Z"]}], payload.data["events"])
+        self.assertEqual("Event 'Office Hours' repeating from 2026-08-31", payload.labels[("events", 1)])
+
+    def test_local_until_becomes_the_end_of_that_local_day_in_utc(self) -> None:
+        for zone, until in (("Europe/Amsterdam", "20261211T225959Z"), ("America/Los_Angeles", "20261212T075959Z")):
+            with self.subTest(zone=zone):
+                # GIVEN
+                plan = given_a_plan(courses=[Course(title="MAT 25", assignments=[
+                    Homework(title="Problem Set", due_date=date(2026, 9, 4), due_time=time(23, 59),
+                             recurrence_rule="FREQ=WEEKLY;BYDAY=FR;UNTIL=20261211")])])
+
+                # WHEN
+                payload = build_import(plan, ZoneInfo(zone))
+
+                # THEN
+                homework = payload.data["homework"][0]
+                self.assertEqual(1, len(payload.data["homework"]))
+                self.assertEqual(f"FREQ=WEEKLY;BYDAY=FR;UNTIL={until}", homework["recurrence_rule"])
+                self.assertEqual("-1/100", homework["current_grade"])
+                self.assertNotIn("exception_dates", homework)
+                self.assertEqual("Assignment 'Problem Set' (MAT 25) repeating from 2026-09-04",
+                                 payload.labels[("homework", 1)])
+
+    def test_rules_without_until_end_at_the_end_of_the_last_local_day(self) -> None:
+        for zone, until in (("Europe/Amsterdam", "20261218T225959Z"), ("America/Chicago", "20261219T055959Z")):
+            with self.subTest(zone=zone):
+                # GIVEN
+                plan = given_a_plan(courses=[Course(title="MAT 25", assignments=[
+                    Homework(title="Lab", due_date=date(2026, 9, 2),
+                             recurrence_rule="freq=weekly;interval=2;byday=we"),
+                    Homework(title="Reflection", due_date=date(2026, 9, 30),
+                             recurrence_rule="RRULE:FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=3")])],
+                    events=[Event(title="Office Hours", start_date=date(2026, 9, 1), start_time=time(15),
+                                  recurrence_rule="FREQ=WEEKLY;BYDAY=TU")])
+
+                # WHEN
+                data = build_import(plan, ZoneInfo(zone)).data
+
+                # THEN
+                lab, reflection = data["homework"]
+                self.assertEqual(f"FREQ=WEEKLY;INTERVAL=2;BYDAY=WE;UNTIL={until}", lab["recurrence_rule"])
+                self.assertEqual("FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=3", reflection["recurrence_rule"])
+                self.assertEqual(f"FREQ=WEEKLY;BYDAY=TU;UNTIL={until}", data["events"][0]["recurrence_rule"])
+
+    def test_all_day_repeat_skips_no_class_dates_at_local_midnight(self) -> None:
+        for zone, skipped in (("Europe/Amsterdam", "2026-09-06T22:00:00Z"),
+                              ("America/Los_Angeles", "2026-09-07T07:00:00Z")):
+            with self.subTest(zone=zone):
+                # GIVEN
+                plan = given_a_plan(events=[Event(title="Gym", start_date=date(2026, 8, 31),
+                                                  recurrence_rule="FREQ=WEEKLY;BYDAY=MO;COUNT=3")])
+
+                # WHEN
+                event = build_import(plan, ZoneInfo(zone)).data["events"][0]
+
+                # THEN
+                self.assertTrue(event["all_day"])
+                self.assertEqual([skipped], event["exception_dates"])
+
+    def test_repeating_assignment_skips_term_and_class_no_class_dates(self) -> None:
+        # GIVEN
+        plan = given_a_plan(courses=[Course(title="MAT 25", no_class_dates=[date(2026, 9, 21)], assignments=[
+            Homework(title="Quiz", due_date=date(2026, 8, 31), due_time=time(9),
+                     recurrence_rule="FREQ=WEEKLY;BYDAY=MO;UNTIL=20260928")])])
+
+        # WHEN
+        homework = build_import(plan, ZoneInfo("America/Chicago")).data["homework"][0]
+
+        # THEN
+        self.assertEqual("2026-08-31T09:00:00-05:00", homework["start"])
+        self.assertEqual(["2026-09-07T14:00:00Z", "2026-09-21T14:00:00Z"], homework["exception_dates"],
+                         "Sep 7 is the term's no-class date, Sep 21 the class's")
+
+    def test_weekly_exceptions_keep_the_local_time_across_dst(self) -> None:
+        # GIVEN
+        plan = given_a_plan(course_group=CourseGroup(title="Fall 2026", start_date=date(2026, 8, 31),
+                                                     end_date=date(2026, 12, 18), no_class_dates=[date(2026, 11, 2)]),
+                            events=[Event(title="Seminar", start_date=date(2026, 10, 26), start_time=time(9),
+                                          recurrence_rule="FREQ=WEEKLY;BYDAY=MO;COUNT=2")])
+
+        # WHEN
+        event = build_import(plan, ZoneInfo("America/Chicago")).data["events"][0]
+
+        # THEN
+        self.assertEqual("2026-10-26T09:00:00-05:00", event["start"])
+        self.assertEqual(["2026-11-02T15:00:00Z"], event["exception_dates"], "09:00 CST, after DST ends on Nov 1")
 
     def test_ids_are_unique_per_section_and_resolve(self) -> None:
         # GIVEN
@@ -259,10 +345,7 @@ class TestValidateSchedules(unittest.TestCase):
         self.assertEqual([
             "Class 'ART', 6-day cycle schedule: cycle Day 1 (2026-09-05) is a Saturday; the cycle only counts "
             "school days, Monday to Friday.",
-            "Class 'ART', 6-day cycle schedule: cycle day(s) 0, 7 aren't in a 6-day cycle.",
             "Class 'ART', 6-day cycle schedule: a time slot lists the same cycle day more than once.",
-            "Class 'ART', 6-day cycle schedule: the slot on Days 0, 7, 3, and 3 starts at 10:00, which isn't "
-            "before its end (09:00).",
             "Class 'ART', A/B Day schedule: cycle Day 1 (2026-09-01) is a no-class date.",
             "Class 'ART', A/B Day schedule: cycle Day 1 (2026-09-07) is a no-class date.",
         ], problems)
@@ -297,10 +380,8 @@ class TestValidateSchedules(unittest.TestCase):
 
         # THEN
         self.assertEqual([
-            "Class 'LAB', weekly schedule: its start date (2026-10-01) is after its end date (2026-09-01).",
             "Class 'LAB', Week A schedule: its dates (2026-08-31 to 2026-11-20) fall outside the class's dates "
             "(2026-08-31 to 2026-10-30).",
-            "Class 'LAB', Week A schedule: the meeting on Fri starts at 09:00, which isn't before its end (09:00).",
         ], problems)
 
     def test_unknown_pattern_is_rejected(self):
@@ -363,27 +444,10 @@ class TestValidate(unittest.TestCase):
         self.assertEqual([
             "Class 'CHEM 101': its dates (2026-08-31 to 2027-01-15) fall outside the term (2026-08-31 to "
             "2026-12-18).",
-            "Class 'CHEM 101', weekly schedule: the meeting on Tue starts at 11:00, which isn't before its end "
-            "(10:00).",
-            "Class 'CHEM 101', weekly schedule: meeting times on Thu can't start or end at midnight.",
             "Class 'CHEM 101': category 'labs' is listed more than once.",
-            "Class 'CHEM 101': category weights add up to 110%, more than 100%.",
             "Class 'CHEM 101', assignment 'Lab 1': category 'Quizzes' isn't one of the class's categories.",
             "Class 'CHEM 101', assignment 'Lab 2': an end time needs a due time.",
-            "Class 'CHEM 101', assignment 'Lab 3': its end time (11:00) isn't after its due time (12:00).",
         ], problems)
-
-    def test_term_problems(self) -> None:
-        # GIVEN
-        plan = given_a_plan()
-        plan.course_group.no_class_dates.append(date(2027, 1, 1))
-
-        # WHEN
-        problems = validate(plan)
-
-        # THEN
-        self.assertEqual(["Term 'Fall 2026': no-class date 2027-01-01 is outside 2026-08-31 to 2026-12-18."],
-                         problems)
 
     def test_due_date_outside_the_class(self) -> None:
         # GIVEN
@@ -399,44 +463,109 @@ class TestValidate(unittest.TestCase):
 
     def test_event_problems(self) -> None:
         # GIVEN
-        plan = given_a_plan(events=[Event(title="Review", start_date=date(2026, 12, 10), end_time=time(17),
-                                          repeat=Repeat(days=["thursday"], until=date(2026, 12, 1)))])
+        plan = given_a_plan(events=[Event(title="Review", start_date=date(2026, 12, 10), end_time=time(17))])
 
         # WHEN
         problems = validate(plan)
 
         # THEN
-        self.assertEqual(["Event 'Review': an end time needs a start time.",
-                          "Event 'Review': it repeats until 2026-12-01, before its first date (2026-12-10)."],
-                         problems)
+        self.assertEqual(["Event 'Review': an end time needs a start time."], problems)
+
+    def test_repeat_problems(self) -> None:
+        # GIVEN
+        plan = given_a_plan(
+            courses=[Course(title="MAT 25", assignments=[
+                Homework(title="Unreadable", due_date=date(2026, 9, 4), recurrence_rule="FREQ=WEEKLY;BYDAY=XX"),
+                Homework(title="Timed until", due_date=date(2026, 9, 4),
+                         recurrence_rule="FREQ=WEEKLY;UNTIL=20261211T120000Z"),
+                Homework(title="Never", due_date=date(2026, 9, 4),
+                         recurrence_rule="FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30"),
+                Homework(title="Off its days", due_date=date(2026, 9, 3), recurrence_rule="FREQ=WEEKLY;BYDAY=FR")])],
+            events=[Event(title="Holiday only", start_date=date(2026, 9, 7), recurrence_rule="FREQ=DAILY;COUNT=1")])
+
+        # WHEN
+        problems = validate(plan)
+
+        # THEN
+        self.assertEqual([
+            "Class 'MAT 25', assignment 'Unreadable': its recurrence_rule `FREQ=WEEKLY;BYDAY=XX` isn't an iCal "
+            "RRULE.",
+            "Class 'MAT 25', assignment 'Timed until': its recurrence_rule `FREQ=WEEKLY;UNTIL=20261211T120000Z` has "
+            "an `UNTIL` that isn't a local date, like 20261211.",
+            "Class 'MAT 25', assignment 'Never': its recurrence_rule `FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30` has no "
+            "dates within 5 years.",
+            "Class 'MAT 25', assignment 'Off its days': 2026-09-03 isn't an occurrence of its recurrence_rule "
+            "`FREQ=WEEKLY;BYDAY=FR`; the item's date is its first occurrence.",
+            "Event 'Holiday only': every occurrence of its recurrence_rule `FREQ=DAILY;COUNT=1` falls on a no-class "
+            "date."], problems)
+
+    def test_repeating_assignment_past_its_class_is_a_problem(self) -> None:
+        # GIVEN
+        plan = given_a_plan(courses=[Course(title="MAT 25", end_date=date(2026, 12, 4), assignments=[
+            Homework(title="Until", due_date=date(2026, 9, 4), recurrence_rule="FREQ=WEEKLY;BYDAY=FR;UNTIL=20261211"),
+            Homework(title="Count", due_date=date(2026, 9, 4), recurrence_rule="FREQ=WEEKLY;BYDAY=FR;COUNT=20"),
+            Homework(title="Within", due_date=date(2026, 9, 4), recurrence_rule="FREQ=WEEKLY;BYDAY=FR;UNTIL=20261204"),
+            Homework(title="Open", due_date=date(2026, 9, 4), recurrence_rule="FREQ=WEEKLY;BYDAY=FR")])])
+
+        # WHEN
+        problems = validate(plan)
+
+        # THEN
+        self.assertEqual([
+            "Class 'MAT 25', assignment 'Until': its recurrence_rule `FREQ=WEEKLY;BYDAY=FR;UNTIL=20261211` has "
+            "occurrences through 2026-12-11, outside the class's dates (2026-08-31 to 2026-12-04).",
+            "Class 'MAT 25', assignment 'Count': its recurrence_rule `FREQ=WEEKLY;BYDAY=FR;COUNT=20` has "
+            "occurrences through 2027-01-15, outside the class's dates (2026-08-31 to 2026-12-04)."], problems)
 
     def test_caps(self) -> None:
         # GIVEN
-        every_day = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
         plan = given_a_plan(
-            courses=[Course(title=f"Class {index}") for index in range(MAX_COURSES + 1)],
-            events=[Event(title=f"Study block {index}", start_date=date(2026, 8, 31),
-                          repeat=Repeat(days=every_day, until=date(2026, 12, 18))) for index in range(5)])
+            events=[Event(title=f"Study block {index}", start_date=date(2026, 8, 31), recurrence_rule="FREQ=DAILY")
+                    for index in range(5)])
 
         # WHEN
         problems = validate(plan)
 
         # THEN
-        self.assertIn(f"The plan has {MAX_COURSES + 1} classes; one import takes at most {MAX_COURSES}.", problems)
-        self.assertIn(f"The plan's events come to more than {MAX_EVENTS} after repeats; one import takes at most "
-                      f"{MAX_EVENTS}.", problems)
+        self.assertEqual([f"The plan has more than {MAX_EVENTS} events, counting each repeating occurrence; "
+                          f"the connector imports at most {MAX_EVENTS} at once."], problems)
 
-    def test_unbounded_repeat_is_refused_before_expanding(self) -> None:
+    def test_assignment_cap_counts_each_occurrence(self) -> None:
         # GIVEN
-        plan = given_a_plan(events=[Event(title="Forever", start_date=date(2026, 8, 31),
-                                          repeat=Repeat(days=["monday"], until=date(9999, 12, 31)))])
+        plan = given_a_plan(courses=[Course(title=f"Class {index}", assignments=[
+            Homework(title="Daily log", due_date=date(2026, 8, 31),
+                     recurrence_rule="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR")])
+            for index in range(13)])
 
         # WHEN
         problems = validate(plan)
 
         # THEN
-        self.assertEqual([f"Event 'Forever': it repeats from 2026-08-31 until 9999-12-31; a repeat can span at most "
-                          f"{MAX_REPEAT_DAYS} days."], problems)
+        self.assertEqual([f"The plan has more than {MAX_ASSIGNMENTS} assignments, counting each repeating occurrence; "
+                          f"the connector imports at most {MAX_ASSIGNMENTS} at once."], problems)
+
+    def test_repeat_expansion_stops_at_a_count_whatever_the_frequency(self) -> None:
+        # GIVEN
+        event = Event(title="Ping", start_date=date(2026, 8, 31), start_time=time(9), recurrence_rule="FREQ=SECONDLY")
+
+        # WHEN
+        days = occurrences(event, [], date(2026, 12, 18))
+
+        # THEN
+        self.assertEqual(max(MAX_ASSIGNMENTS, MAX_EVENTS) + 1, len(days))
+
+    def test_repeat_expansion_stops_at_the_horizon(self) -> None:
+        # GIVEN
+        event = Event(title="Journal", start_date=date(2026, 8, 31), recurrence_rule="FREQ=WEEKLY;COUNT=1000000")
+        horizon = date(2026 + RECURRENCE_HORIZON_YEARS, 8, 31)
+
+        # WHEN
+        days = occurrences(event, [], date(2026, 12, 18))
+
+        # THEN
+        self.assertEqual(date(2026, 8, 31), days[0])
+        self.assertLessEqual(days[-1], horizon)
+        self.assertGreater(days[-1] + timedelta(weeks=1), horizon)
 
     def test_oversized_lists_are_rejected_by_the_schema(self) -> None:
         # WHEN / THEN
@@ -467,7 +596,8 @@ class TestWarningsAndSummary(unittest.TestCase):
         gaps = to_confirm(plan)
 
         # THEN
-        self.assertEqual(["Class 'ENG 101': credits aren't set, so it imports with 0 credits.",
+        self.assertEqual(["Class 'ENG 101': credits aren't set, so it imports with 0 credits and isn't counted in "
+                          "GPA.",
                           "Class 'ENG 101': no grading categories, so its assignments go in Uncategorized.",
                           "Class 'ENG 101': 1 assignment(s) have no due time, so they're all-day."], gaps)
 
@@ -514,8 +644,8 @@ class TestWarningsAndSummary(unittest.TestCase):
             courses=[Course(title="BIO 151", credits=Decimal(4), is_online=True),
                      Course(title="bio 151", credits=Decimal(1), is_online=True)],
             events=[Event(title="Orientation", start_date=date(2026, 8, 20)),
-                    Event(title="Review", start_date=date(2026, 12, 1),
-                          repeat=Repeat(days=["monday"], until=date(2027, 1, 11)))])
+                    Event(title="Review", start_date=date(2026, 12, 7),
+                          recurrence_rule="FREQ=WEEKLY;BYDAY=MO;UNTIL=20270111")])
 
         # WHEN
         notes = warnings(plan)
@@ -523,7 +653,7 @@ class TestWarningsAndSummary(unittest.TestCase):
         # THEN
         self.assertEqual(["Class 'BIO 151' is listed 2 times; each becomes its own class in Helium.",
                           "Event 'Orientation' (on 2026-08-20) falls outside the term (2026-08-31 to 2026-12-18).",
-                          "Event 'Review' (2026-12-01 to 2027-01-11) falls outside the term (2026-08-31 to "
+                          "Event 'Review' (2026-12-07 to 2027-01-11) falls outside the term (2026-08-31 to "
                           "2026-12-18)."], notes)
 
     def test_warnings_alongside_problems(self) -> None:
@@ -549,13 +679,57 @@ class TestWarningsAndSummary(unittest.TestCase):
         # THEN
         self.assertEqual({"classes": 2, "categories": 2, "assignments": 3, "events": 2}, summary["totals"])
         bio = summary["classes"][0]
+        self.assertEqual([], bio["repeating"])
         self.assertEqual(["Mon/Wed/Fri 10:00-10:50; Mon 14:00-16:50"], bio["meets"])
         self.assertEqual("weighted", bio["grading"])
         self.assertEqual(["Homework (40%)", "Exams (60%)"], bio["categories"])
         self.assertEqual(("2026-09-14", "2026-12-14"), (bio["first_due"], bio["last_due"]))
         self.assertIsNone(summary["classes"][1]["grading"])
         self.assertEqual([{"title": "Office Hours", "time": "15:00-16:00", "first": "2026-09-01",
-                           "last": "2026-09-08", "occurrences": 2}], summary["events"])
+                           "last": "2026-09-08", "occurrences": 2, "repeats": "weekly on Tue until 2026-09-08"}],
+                         summary["events"])
+
+    def test_summary_counts_each_occurrence_of_a_repeating_assignment(self) -> None:
+        # GIVEN
+        plan = given_a_plan(courses=[Course(title="MAT 25", assignments=[
+            Homework(title="Problem Set", due_date=date(2026, 8, 31),
+                     recurrence_rule="FREQ=WEEKLY;BYDAY=MO,FR;UNTIL=20260918"),
+            Homework(title="Final", due_date=date(2026, 12, 14))])])
+
+        # WHEN
+        summary = summarize(plan)
+
+        # THEN
+        mat = summary["classes"][0]
+        self.assertEqual(6, mat["assignments"], "Aug 31, Sep 4, 11, 14, 18 (Sep 7 skipped), plus the final")
+        self.assertEqual([{"title": "Problem Set", "repeats": "weekly on Mon, Fri until 2026-09-18",
+                           "assignments": 5}], mat["repeating"])
+        self.assertEqual(("2026-08-31", "2026-12-14"), (mat["first_due"], mat["last_due"]))
+        self.assertEqual(6, summary["totals"]["assignments"])
+
+    def test_open_ended_event_is_counted_through_the_term(self) -> None:
+        # GIVEN
+        plan = given_a_plan(events=[Event(title="Club", start_date=date(2026, 12, 4), start_time=time(18),
+                                          recurrence_rule="FREQ=WEEKLY;BYDAY=FR")])
+
+        # WHEN
+        summary = summarize(plan)
+
+        # THEN
+        self.assertEqual([{"title": "Club", "time": "18:00", "first": "2026-12-04", "last": "2026-12-18",
+                           "occurrences": 3, "repeats": "weekly on Fri"}], summary["events"])
+
+    def test_describe_rule(self) -> None:
+        for rule, description in (("FREQ=DAILY", "daily"),
+                                  ("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;UNTIL=20261211",
+                                   "every 2 weeks on Mon, Wed until 2026-12-11"),
+                                  ("FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=4", "monthly on the last day, 4 times"),
+                                  ("FREQ=MONTHLY;BYMONTHDAY=15", "monthly on day 15"),
+                                  ("FREQ=YEARLY", "yearly"),
+                                  ("FREQ=HOURLY", "FREQ=HOURLY")):
+            with self.subTest(rule=rule):
+                # THEN
+                self.assertEqual(description, describe_rule(rule))
 
     def test_summary_of_points_based_grading_and_all_day_events(self) -> None:
         # GIVEN

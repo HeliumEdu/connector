@@ -1,7 +1,8 @@
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from helium_connector.platform_enums import RECURRENCE_HORIZON_YEARS
 from helium_connector.reads import (
     MAX_NOTE_CHARS,
     delta_to_text,
@@ -17,6 +18,7 @@ from helium_connector.reads import (
 
 CHICAGO = ZoneInfo("America/Chicago")
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
+LOS_ANGELES = ZoneInfo("America/Los_Angeles")
 COURSE_GROUPS = [{"id": 1, "title": "Spring 2026", "start_date": "2026-01-12", "end_date": "2026-05-08",
                   "overall_grade": 91.5},
                  {"id": 2, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
@@ -117,7 +119,7 @@ class TestShapeAssignments(unittest.TestCase):
         self.assertEqual({"id": 1, "title": "Problem Set 1", "class": "BIO 151", "class_id": 10, "term": "Fall 2026",
                           "category": "Exams",
                           "due": "2026-09-14T23:59:00-05:00", "end": None, "all_day": False, "completed": True,
-                          "grade": "18/20", "priority": 50}, shaped[0])
+                          "grade": "18/20", "priority": 50, "repeats": False}, shaped[0])
         self.assertEqual(("2026-10-31", None, None), (shaped[1]["due"], shaped[1]["grade"], shaped[1]["category"]))
 
     def test_exam_end_time(self) -> None:
@@ -131,6 +133,35 @@ class TestShapeAssignments(unittest.TestCase):
         # THEN
         self.assertEqual(("2026-10-14T10:00:00-05:00", "2026-10-14T11:50:00-05:00"),
                          (shaped[0]["due"], shaped[0]["end"]))
+
+    def test_repeating_assignment_is_listed_once_per_occurrence_in_local_time(self) -> None:
+        # GIVEN
+        homework = [{"id": 4, "title": "Reading", "course": 10, "all_day": False, "show_end_time": True,
+                     "start": "2026-10-23T21:00:00Z", "end": "2026-10-23T22:00:00Z", "current_grade": "-1/100",
+                     "recurrence_rule": "FREQ=WEEKLY;BYDAY=FR;UNTIL=20261114T055959Z",
+                     "exception_dates": ["2026-10-30T21:00:00Z"]}]
+
+        # WHEN
+        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+
+        # THEN
+        self.assertEqual([("2026-10-23T16:00:00-05:00", "2026-10-23T17:00:00-05:00"),
+                          ("2026-11-06T16:00:00-06:00", "2026-11-06T17:00:00-06:00"),
+                          ("2026-11-13T16:00:00-06:00", "2026-11-13T17:00:00-06:00")],
+                         [(item["due"], item["end"]) for item in shaped])
+        self.assertTrue(all(item["id"] == 4 and item["repeats"] and not item["completed"] for item in shaped))
+
+    def test_endless_repeating_assignment_stops_at_the_horizon(self) -> None:
+        # GIVEN
+        begins = datetime.now(timezone.utc) - timedelta(days=1)
+        homework = [{"id": 4, "title": "Reflection", "course": 10, "all_day": False,
+                     "start": begins.isoformat(), "end": begins.isoformat(), "recurrence_rule": "FREQ=YEARLY"}]
+
+        # WHEN
+        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+
+        # THEN
+        self.assertEqual(RECURRENCE_HORIZON_YEARS + 1, len(shaped))
 
 
 class TestDueBetween(unittest.TestCase):
@@ -195,6 +226,17 @@ class TestShapeResources(unittest.TestCase):
 
 
 class TestExpandEvents(unittest.TestCase):
+    def test_window_past_the_horizon_lists_nothing(self) -> None:
+        # GIVEN
+        events = [{"id": 6, "title": "Standup", "start": "2026-09-01T14:00:00Z", "end": "2026-09-01T14:15:00Z",
+                   "all_day": False, "recurrence_rule": "FREQ=DAILY"}]
+
+        # WHEN
+        expanded = expand_events(events, date(9000, 1, 1), date(9000, 1, 7), CHICAGO)
+
+        # THEN
+        self.assertEqual([], expanded)
+
     def test_single_event(self) -> None:
         # GIVEN
         events = [{"id": 1, "title": "Advising", "start": "2026-09-02T20:00:00Z", "end": "2026-09-02T20:30:00Z",
@@ -234,6 +276,113 @@ class TestExpandEvents(unittest.TestCase):
         self.assertEqual([("2026-11-26", None, True)],
                          [(event["start"], event["end"], event["all_day"]) for event in expanded])
 
+    def test_all_day_series_skips_an_occurrence_excluded_at_its_local_midnight(self) -> None:
+        for time_zone, start, end, exception, expected in (
+                (AMSTERDAM, "2026-10-18T22:00:00Z", "2026-10-19T22:00:00Z", "2026-10-25T23:00:00Z",
+                 ["2026-10-19", "2026-11-02", "2026-11-09"]),
+                (LOS_ANGELES, "2026-10-19T07:00:00Z", "2026-10-20T07:00:00Z", "2026-11-02T08:00:00Z",
+                 ["2026-10-19", "2026-10-26", "2026-11-09"])):
+            with self.subTest(time_zone=time_zone.key):
+                # GIVEN
+                events = [{"id": 7, "title": "Lab day", "start": start, "end": end, "all_day": True,
+                           "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO", "exception_dates": [exception]}]
+
+                # WHEN
+                expanded = expand_events(events, date(2026, 10, 19), date(2026, 11, 9), time_zone)
+
+                # THEN
+                self.assertEqual(expected, [occurrence["start"] for occurrence in expanded])
+                self.assertTrue(all(occurrence["all_day"] and occurrence["end"] is None for occurrence in expanded))
+
+    def test_weekly_series_keeps_its_local_time_across_dst_east_and_west_of_utc(self) -> None:
+        for time_zone, start, end, expected in (
+                (AMSTERDAM, "2026-10-21T07:00:00Z", "2026-10-21T08:00:00Z",
+                 ["2026-10-21T09:00:00+02:00", "2026-10-28T09:00:00+01:00", "2026-11-04T09:00:00+01:00"]),
+                (LOS_ANGELES, "2026-10-21T16:00:00Z", "2026-10-21T17:00:00Z",
+                 ["2026-10-21T09:00:00-07:00", "2026-10-28T09:00:00-07:00", "2026-11-04T09:00:00-08:00"])):
+            with self.subTest(time_zone=time_zone.key):
+                # GIVEN
+                events = [{"id": 8, "title": "Study group", "start": start, "end": end, "all_day": False,
+                           "recurrence_rule": "FREQ=WEEKLY;BYDAY=WE"}]
+
+                # WHEN
+                expanded = expand_events(events, date(2026, 10, 19), date(2026, 11, 8), time_zone)
+
+                # THEN
+                self.assertEqual(expected, [occurrence["start"] for occurrence in expanded])
+                self.assertEqual([occurrence["start"].replace("T09:", "T10:") for occurrence in expanded],
+                                 [occurrence["end"] for occurrence in expanded])
+
+    def test_series_that_never_produces_a_date_expands_to_nothing(self) -> None:
+        # GIVEN
+        events = [{"id": 12, "title": "Never", "start": "2026-10-19T07:00:00Z", "end": "2026-10-19T08:00:00Z",
+                   "all_day": False, "recurrence_rule": "FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30;UNTIL=20271231T000000Z"}]
+
+        # WHEN
+        expanded = expand_events(events, date(2026, 10, 19), date(2026, 11, 30), LOS_ANGELES)
+
+        # THEN
+        self.assertEqual([], expanded)
+
+    def test_series_ending_at_the_end_of_a_local_day_includes_that_day_only(self) -> None:
+        # GIVEN
+        events = [{"id": 9, "title": "Night lab", "start": "2026-10-20T04:00:00Z", "end": "2026-10-20T05:00:00Z",
+                   "all_day": False, "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO;UNTIL=20261110T075959Z"}]
+
+        # WHEN
+        expanded = expand_events(events, date(2026, 10, 19), date(2026, 11, 30), LOS_ANGELES)
+
+        # THEN
+        self.assertEqual(["2026-10-19T21:00:00-07:00", "2026-10-26T21:00:00-07:00", "2026-11-02T21:00:00-08:00",
+                          "2026-11-09T21:00:00-08:00"], [occurrence["start"] for occurrence in expanded])
+
+    def test_occurrence_split_from_its_series_appears_once_on_its_own(self) -> None:
+        # GIVEN
+        events = [{"id": 10, "title": "Office hours", "start": "2026-10-19T07:00:00Z", "end": "2026-10-19T08:00:00Z",
+                   "all_day": False, "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO",
+                   "exception_dates": ["2026-11-02T08:00:00Z"]},
+                  {"id": 11, "title": "Office hours (moved)", "start": "2026-11-03T09:00:00Z",
+                   "end": "2026-11-03T10:00:00Z", "all_day": False, "recurrence_rule": None,
+                   "exception_dates": None}]
+
+        # WHEN
+        expanded = expand_events(events, date(2026, 10, 26), date(2026, 11, 9), AMSTERDAM)
+
+        # THEN
+        self.assertEqual([(10, "2026-10-26T09:00:00+01:00", True), (11, "2026-11-03T10:00:00+01:00", False),
+                          (10, "2026-11-09T09:00:00+01:00", True)],
+                         [(occurrence["id"], occurrence["start"], occurrence["repeats"]) for occurrence in expanded])
+
+    def test_monthly_series_on_the_last_day_lands_on_each_months_last_day(self) -> None:
+        for start, end, window_end, expected in (
+                ("2027-01-31T08:00:00Z", "2027-01-31T09:00:00Z", date(2027, 4, 30),
+                 ["2027-01-31", "2027-02-28", "2027-03-31", "2027-04-30"]),
+                ("2028-01-31T08:00:00Z", "2028-01-31T09:00:00Z", date(2028, 4, 30),
+                 ["2028-01-31", "2028-02-29", "2028-03-31", "2028-04-30"])):
+            with self.subTest(start=start):
+                # GIVEN
+                events = [{"id": 12, "title": "Rent", "start": start, "end": end, "all_day": False,
+                           "recurrence_rule": "FREQ=MONTHLY;BYMONTHDAY=-1"}]
+
+                # WHEN
+                expanded = expand_events(events, date(int(start[:4]), 1, 1), window_end, AMSTERDAM)
+
+                # THEN
+                self.assertEqual(expected, [occurrence["start"][:10] for occurrence in expanded])
+                self.assertEqual({"T09:00:00"}, {occurrence["start"][10:19] for occurrence in expanded})
+
+    def test_occurrence_starting_before_the_window_is_listed_while_it_runs_into_it(self) -> None:
+        # GIVEN
+        events = [{"id": 13, "title": "Late shift", "start": "2026-08-31T04:00:00Z", "end": "2026-08-31T06:00:00Z",
+                   "all_day": False, "recurrence_rule": "FREQ=WEEKLY;BYDAY=SU"}]
+
+        # WHEN
+        expanded = expand_events(events, date(2026, 9, 7), date(2026, 9, 13), CHICAGO)
+
+        # THEN
+        self.assertEqual(["2026-09-06T23:00:00-05:00", "2026-09-13T23:00:00-05:00"],
+                         [occurrence["start"] for occurrence in expanded])
+
     def test_outside_the_window(self) -> None:
         # GIVEN
         events = [{"id": 1, "title": "Advising", "start": "2026-09-20T20:00:00Z", "end": "2026-09-20T20:30:00Z"}]
@@ -254,11 +403,12 @@ class TestShapeGrades(unittest.TestCase):
                "num_homework": 4, "num_homework_graded": 0, "points_earned": 0, "points_possible": 0,
                "categories": [exams]}
         grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 90.123, "trend": 0.0021,
-                                     "courses": [bio]},
-                                    {"id": 1, "title": "Spring 2026", "overall_grade": 88, "courses": []}]}
+                                     "grade_scale": [], "courses": [bio]},
+                                    {"id": 1, "title": "Spring 2026", "overall_grade": 88, "grade_scale": [],
+                                     "courses": []}]}
 
         # WHEN
-        shaped = shape_grades(grades, {2})
+        shaped = shape_grades(grades, {2})["terms"]
 
         # THEN
         self.assertEqual(1, len(shaped))
@@ -268,6 +418,68 @@ class TestShapeGrades(unittest.TestCase):
         self.assertTrue(bio["weighted"])
         self.assertEqual({"id": 3, "title": "Exams", "weight": 60, "average_grade": None, "trend": "down",
                           "graded_assignments": 0, "ungraded_assignments": 2}, bio["categories"][0])
+
+    def test_gpa(self) -> None:
+        # GIVEN
+        bio = {"id": 10, "title": "BIO 151", "overall_grade": 86.5, "grade_point": 3.25, "credits": "4.00",
+               "categories": []}
+        chem = {"id": 11, "title": "CHEM 101", "overall_grade": 81.0, "grade_point": 3.0, "credits": "4.00",
+                "categories": []}
+        art = {"id": 12, "title": "ART 101", "overall_grade": -1, "grade_point": -1, "credits": "0.00",
+               "categories": []}
+        scale = [{"min_grade": 0.0, "grade_point": 0.0, "label": ""},
+                 {"min_grade": 80.0, "grade_point": 3.0, "label": "B"},
+                 {"min_grade": 85.0, "grade_point": 3.25, "label": "B+"}]
+        grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 83.75, "gpa": 3.125,
+                                     "in_cumulative_gpa": True, "grade_scale": scale, "courses": [bio, chem, art]}],
+                  "cumulative_gpa": 3.33333}
+
+        # WHEN
+        shaped = shape_grades(grades)
+
+        # THEN
+        term = shaped["terms"][0]
+        self.assertEqual((3.13, True), (term["gpa"], term["counts_toward_cumulative_gpa"]))
+        self.assertEqual([None, "B", "B+"], [band["label"] for band in term["grade_scale"]])
+        self.assertEqual([(3.25, "4.00"), (3.0, "4.00"), (None, "0.00")],
+                         [(course["grade_point"], course["credits"]) for course in term["classes"]])
+        self.assertEqual(3.33, shaped["cumulative_gpa"])
+
+    def test_term_on_another_scale_doesnt_count_toward_cumulative(self) -> None:
+        # GIVEN
+        grades = {"course_groups": [{"id": 2, "title": "Abroad", "overall_grade": 88, "gpa": 1.7,
+                                     "in_cumulative_gpa": False, "grade_scale": [], "courses": []}],
+                  "cumulative_gpa": 3.5}
+
+        # WHEN
+        shaped = shape_grades(grades)
+
+        # THEN
+        self.assertFalse(shaped["terms"][0]["counts_toward_cumulative_gpa"])
+
+    def test_term_without_a_grade_scale_has_no_gpa(self) -> None:
+        # GIVEN
+        grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 91, "gpa": -1,
+                                     "in_cumulative_gpa": False, "grade_scale": [], "courses": []}],
+                  "cumulative_gpa": -1}
+
+        # WHEN
+        shaped = shape_grades(grades)
+
+        # THEN
+        self.assertEqual(([], None), (shaped["terms"][0]["grade_scale"], shaped["terms"][0]["gpa"]))
+        self.assertIsNone(shaped["cumulative_gpa"])
+
+    def test_grades_round_ties_as_the_app_does(self) -> None:
+        # GIVEN
+        grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 90.125, "gpa": 3.125,
+                                     "grade_scale": [], "courses": []}]}
+
+        # WHEN
+        term = shape_grades(grades)["terms"][0]
+
+        # THEN
+        self.assertEqual((90.13, 3.13), (term["overall_grade"], term["gpa"]))
 
     def test_needed_grade_rounds_ties_as_the_app_does(self) -> None:
         # GIVEN
@@ -283,13 +495,13 @@ class TestShapeGrades(unittest.TestCase):
     def test_steady_trend(self) -> None:
         # GIVEN
         grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 90, "trend": 0,
-                                     "courses": []}]}
+                                     "grade_scale": [], "courses": []}]}
 
         # WHEN
         shaped = shape_grades(grades)
 
         # THEN
-        self.assertEqual("steady", shaped[0]["trend"])
+        self.assertEqual("steady", shaped["terms"][0]["trend"])
 
     def test_needed_grade_rounds_as_the_app_shows_it(self) -> None:
         # GIVEN

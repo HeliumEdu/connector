@@ -20,8 +20,6 @@ from helium_connector.settings import MCP_PATH, SCOPES, Settings
 
 logger = logging.getLogger(__name__)
 
-#: Files served at ``/.well-known/<name>``, such as a domain verification token: ``.json`` files as JSON, others as
-#: plain text.
 WELL_KNOWN_DIR: Final = Path(__file__).resolve().parent / "well_known"
 
 

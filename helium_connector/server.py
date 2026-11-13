@@ -18,8 +18,8 @@ from helium_connector.auth import AGENT, HeliumTokenVerifier
 from helium_connector.models import ExistingTerm, ImportPlan, TermPlan
 from helium_connector.planning import build_import, describe_import, existing_term, explain_platform_errors, \
     summarize, to_confirm, validate, warnings
-from helium_connector.reads import due_between, expand_events, shape_assignments, shape_classes, shape_grades, \
-    shape_needed_grade, shape_notes, shape_resources
+from helium_connector.reads import due_between, expand_events, shape_assignments, shape_classes, \
+    shape_grades, shape_needed_grade, shape_notes, shape_resources
 from helium_connector.settings import Settings
 from heliumedu.client import HeliumClient
 from heliumedu.exception import (
@@ -34,33 +34,21 @@ from heliumedu.exception import (
 
 logger = logging.getLogger(__name__)
 
-#: Where the connector's documentation is.
 DOCS_URL: Final = ("https://www.heliumedu.com/support/getting-started/where-to-start-with-helium/"
                    "#use-ai-as-a-scheduling-assistant")
-#: Helium's logo, for clients that show a server's icon.
 ICON_URL: Final = "https://www.heliumedu.com/icon-512.png"
-#: How many days a read covers when no window is given.
 DEFAULT_WINDOW_DAYS: Final = 7
-#: The longest window a read covers, in days.
 MAX_WINDOW_DAYS: Final = 366
-#: How many items a list returns at a time unless asked for more.
 DEFAULT_PAGE_SIZE: Final = 25
-#: The most items a list returns at a time.
 MAX_PAGE_SIZE: Final = 100
-#: How the import tools describe allowing duplicates.
 DUPLICATES_DESCRIPTION: Final = ("Import even if the new term (same title and dates) or a class (same title, in an "
                                  "existing term) is already in Helium.")
-#: How the .ics tools describe their file.
 ICS_DESCRIPTION: Final = "The calendar, as the .ics file's text, unchanged."
-#: How the .ics tools describe where its entries go.
 ICS_CLASS_DESCRIPTION: Final = ("The class whose assignments the entries become (an id from list_classes, or from "
                                 "what import_term returned). Unset imports them as events.")
-#: The import sections an .ics import fills, by the name the student knows them by.
 _ICS_SECTION_NAMES: Final = {"homework": "assignments", "events": "events"}
-#: Closes every passing preview: not every client applies INSTRUCTIONS, but each reads the tool's result.
 BEFORE_IMPORT: Final = ("Nothing is saved yet. Show the student this summary, including anything to confirm, and "
                         "import only after they confirm.")
-#: What the server tells the model it's for.
 INSTRUCTIONS: Final = (
     "These tools set up a term in a student's Helium planner and read it.\n\n"
     "A term comes from the student's syllabi, plus any .ics calendar files they have (a professor's assignment "
@@ -78,8 +66,9 @@ INSTRUCTIONS: Final = (
     "its class with import_ics.\n\n"
     "Syllabi often leave out what the student knows: the term's dates and days off, credits, the room or whether a "
     "class is online, meeting times that differ by day, whether a lecture and its lab are graded together, the "
-    "grading scheme, due dates for recurring work, and due times for work due in class. Ask the student about "
-    "anything the sources leave unclear rather than guessing, and leave a value unset when it's still unknown.\n\n"
+    "grading scheme, the days and last date of recurring work, and due times for work due in class. Ask the student "
+    "about anything the sources leave unclear rather than guessing, and leave a value unset when it's still "
+    "unknown.\n\n"
     "preview_import_term and preview_import_ics check an import with Helium without saving anything. "
     "preview_import_term returns problems to fix, warnings, what the plan leaves unset (to_confirm), and a summary to "
     "confirm with the student before importing. Dates and times in a plan are local: Helium places them in "
@@ -92,9 +81,10 @@ INSTRUCTIONS: Final = (
     "Suggest a few things that fit their time: overdue work and what's due soonest first, then heavily weighted work "
     "and classes whose grade is down, counting the priority they've set. Let them choose. For the score needed on "
     "remaining work, use get_grades with target_grade rather than calculating it. Help them plan and study, but "
-    "don't do graded work for them."
+    "don't do graded work for them.\n\n"
+    "The student chooses whether to let these tools read their notes when they connect Helium. If list_notes says it "
+    "wasn't given access, go on without notes, and tell the student they can reconnect Helium and allow notes."
 )
-#: The guided syllabus import, for clients that offer prompts.
 SYLLABUS_PROMPT: Final = """Set up my term in Helium from my syllabi.
 
 1. Ask me to attach the syllabus for every class I'm taking this term, and any .ics calendar files I have (like a \
@@ -108,7 +98,7 @@ fill gaps from what's typical. Ask especially about:
    - whether a lecture and its lab, recitation, or discussion are graded together or separately
    - whether each class is online or in person, and its room
    - meeting times that differ by day, or a rotating schedule (A/B weeks, A/B days)
-   - the actual due dates of recurring work, like weekly problem sets
+   - the days and last date of recurring work, like weekly problem sets, when the syllabus doesn't list its dates
    - the time of day for work due in class or due "that week"
    - how each class is graded: weighted categories and their weights, or points
    - which class each calendar file is for
@@ -119,7 +109,6 @@ to_confirm and warnings.
 for this term. Import only after I say I'm ready.
 5. After the classes are in Helium, import each calendar file into its class with import_ics (check it first with \
 preview_import_ics), using the class ids the import returned."""
-#: The guided study session, for clients that offer prompts.
 STUDY_PROMPT: Final = """Help me decide what to work on with the time I have.
 
 1. Ask how much time I have, if I haven't said.
@@ -128,7 +117,7 @@ and my grades and their trends.
 3. Suggest up to three things that fit my time: overdue work and what's due soonest first, then heavily weighted work \
 and classes whose grade is down. Count the priority I've set on assignments, and say why each one made the list.
 4. For an exam coming up, suggest spreading review over the days before it, and quizzing myself from that class's \
-notes (list_notes with its class_id).
+notes (list_notes with its class_id), if Helium lets you read them.
 5. If I ask what I need on remaining work, use get_grades with target_grade; don't calculate it.
 6. Let me choose. Help me plan and study, but don't do graded work for me."""
 
@@ -282,9 +271,10 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
     @server.tool(title="Import an .ics file",
                  description="Save an .ics calendar file's entries to Helium, all at once: as assignments in a class "
                              "already in Helium (uncategorized and ungraded, since a calendar has only titles, "
-                             "dates, and times), or as events. Repeating entries are expanded, and cancelled ones "
-                             "left out. Adds to the account; changes nothing already there. Importing the same file "
-                             "twice adds its entries twice. preview_import_ics shows what it would create.",
+                             "dates, and times), or as events. A repeating entry stays repeating if Helium supports "
+                             "its rule, without its cancelled occurrences, and cancelled entries are left out. Adds "
+                             "to the account; changes nothing already there. Importing the same file twice adds its "
+                             "entries twice. preview_import_ics shows what it would create.",
                  annotations=ToolAnnotations(title="Import an .ics file", read_only_hint=False,
                                              destructive_hint=False, idempotent_hint=False, open_world_hint=False))
     async def import_ics(ics: str = Field(description=ICS_DESCRIPTION),
@@ -379,7 +369,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                  description="List the user's notes as plain text: all of them, those matching a query, a "
                              "class's (its own note and its assignments' and resources'), or the note on one "
                              "assignment, event, or resource. Returns limit at a time, with total and has_more; pass "
-                             "page for the next.",
+                             "page for the next. Works only if the student allowed notes when connecting Helium.",
                  annotations=_reads("List notes"))
     async def list_notes(query: str | None = Field(default=None,
                                                    description="Only notes whose title, text, or linked item "
@@ -400,9 +390,13 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                          limit: int = Field(default=5, ge=1, le=10),
                          page: int = Field(default=1, ge=1)) -> dict[str, Any]:
         async with helium() as (client, time_zone):
-            notes = await client.list_notes_page(query, homework_id=assignment_id, course_id=class_id,
-                                                 event_id=event_id, resource_id=resource_id, page=page,
-                                                 page_size=limit)
+            try:
+                notes = await client.list_notes_page(query, homework_id=assignment_id, course_id=class_id,
+                                                     event_id=event_id, resource_id=resource_id, page=page,
+                                                     page_size=limit)
+            except HeliumPermissionError as e:
+                raise ToolError("This Helium connection wasn't given access to notes. To allow it, reconnect Helium "
+                                "and check \"Read your notes\", then try again.") from e
             courses = await client.list_courses()
         return {"total": notes.total, "page": page, "has_more": notes.has_more,
                 "notes": shape_notes(notes.items, courses, time_zone, limit)}
@@ -435,10 +429,13 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         return {"resource_groups": shape_resources(groups, resources, courses, class_id)}
 
     @server.tool(title="Get grades",
-                 description="Get the user's grades: each term's classes, with overall grade, trend (up, down, "
-                             "or steady), weighted or points-based grading, and each category's weight, average, "
-                             "and ungraded assignments. A grade counts only assignments marked complete with a "
-                             "grade entered; ungraded ones aren't counted against the student until they're graded. "
+                 description="Get the user's grades: each term's GPA, grade scale, and classes, with overall "
+                             "grade, grade point, credits, trend (up, down, or steady), weighted or points-based "
+                             "grading, and each category's weight, average, and ungraded assignments; plus "
+                             "cumulative_gpa, across the terms on the same grade scale as the most recent term with "
+                             "one, other than the example schedule. A grade counts only assignments marked complete "
+                             "with a grade entered; ungraded ones aren't counted against the student until they're "
+                             "graded. A term has no GPA without a grade scale or a graded class with credits. "
                              "With target_grade, class_id, and target_id, returns instead the score Helium "
                              "calculates the class needs to reach target_grade.",
                  annotations=_reads("Get grades"))
@@ -463,7 +460,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         today = _today(time_zone)
         term_ids = {group["id"] for group in groups
                     if include_past_terms or date.fromisoformat(group["end_date"]) >= today}
-        return {"terms": shape_grades(grades, term_ids)}
+        return shape_grades(grades, term_ids)
 
     return server
 
@@ -585,8 +582,8 @@ def _tool_error(e: HeliumError) -> ToolError:
     if isinstance(e, HeliumAuthError):
         return ToolError("Helium signed this connection out. Reconnect Helium and sign in, then try again.")
     elif isinstance(e, HeliumPermissionError):
-        return ToolError("This Helium connection wasn't given access for that. Reconnect Helium and allow both "
-                         "reading the planner and importing, then try again.")
+        return ToolError("This Helium connection wasn't given access for that. Reconnect Helium and allow what it "
+                         "asks for, then try again.")
     elif isinstance(e, HeliumRateLimitedError):
         return ToolError(f"Helium asked to slow down. Try again in {(e.meta or {}).get('retry_after')} seconds.")
     elif isinstance(e, HeliumConnectionError):

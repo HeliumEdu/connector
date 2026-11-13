@@ -13,11 +13,8 @@ from heliumedu.exception import HeliumAuthError
 
 logger = logging.getLogger(__name__)
 
-#: How long a verified token's user is reused before Helium is asked again, in seconds.
 USER_CACHE_SECONDS: Final = 60
-#: The most verified tokens remembered at once.
 USER_CACHE_SIZE: Final = 1000
-#: How the connector names itself to Helium, after the client package.
 AGENT: Final = f"helium-connector/{__version__}"
 
 

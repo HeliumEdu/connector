@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field
 Weekday = Literal["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 Title = Annotated[str, Field(min_length=1)]
 
-#: Weekdays in the order Helium's ``days_of_week`` string uses (Sunday first).
 WEEKDAYS: tuple[Weekday, ...] = ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
 
 
@@ -96,8 +95,9 @@ class Category(_Input):
 
 class Homework(_Input):
     """
-    One graded item with its own due date: homework, a quiz, an exam, a project. Recurring work ("weekly problem sets")
-    is one assignment per due date.
+    One graded item: homework, a quiz, an exam, a project. Recurring work due on a pattern ("a problem set every
+    Friday") is one assignment with a `recurrence_rule`. Work the syllabus lists on specific dates is one assignment
+    per date.
     """
 
     model_config = ConfigDict(title="Assignment")
@@ -106,11 +106,17 @@ class Homework(_Input):
     category: str | None = Field(default=None,
                                  description="The title of one of this class's categories. Unset puts it in "
                                              "Uncategorized.")
-    due_date: date = Field(description="Local due date (an exam's date).")
+    due_date: date = Field(description="Local due date (an exam's date); the first occurrence, if it repeats.")
     due_time: time | None = Field(default=None,
                                   description="Local due time (an exam's start). Work due in class is due when the "
                                               "class starts that day. Unset makes it an all-day item.")
     end_time: time | None = Field(default=None, description="Local end time, for items that span time (exams).")
+    recurrence_rule: str | None = Field(
+        default=None,
+        description="iCal RRULE repeating the assignment from its `due_date`, e.g. "
+                    "`FREQ=WEEKLY;BYDAY=FR;UNTIL=20261211` (`UNTIL` is a local date). Occurrences on the term's or "
+                    "the class's no-class dates are skipped. preview_import_term reports a rule Helium doesn't "
+                    "accept.")
 
 
 class Course(_Input):
@@ -141,27 +147,20 @@ class Course(_Input):
     homework: list[Homework] = Field(default_factory=list, max_length=1000, alias="assignments")
 
 
-class Repeat(_Input):
-    """
-    How an event repeats: weekly, on these days, through a date. Each occurrence becomes its own event.
-    """
-
-    days: list[Weekday] = Field(min_length=1, max_length=7)
-    until: date = Field(description="The last day an occurrence can fall on.")
-
-
 class Event(_Input):
     """
     An ungraded calendar item (office hours, a review session).
     """
 
     title: Title
-    start_date: date = Field(description="Local date of the event (the first occurrence, if it repeats).")
+    start_date: date = Field(description="Local date of the event; the first occurrence, if it repeats.")
     start_time: time | None = Field(default=None, description="Local start time. Unset makes it all-day.")
     end_time: time | None = Field(default=None, description="Local end time.")
-    repeat: Repeat | None = Field(default=None,
-                                  description="Repeats weekly. Occurrences on the term's no-class dates are "
-                                              "skipped.")
+    recurrence_rule: str | None = Field(
+        default=None,
+        description="iCal RRULE repeating the event from its `start_date`, e.g. "
+                    "`FREQ=WEEKLY;BYDAY=TU,TH;UNTIL=20261211` (`UNTIL` is a local date). Occurrences on the term's "
+                    "no-class dates are skipped. preview_import_term reports a rule Helium doesn't accept.")
 
 
 class CourseGroup(_Input):

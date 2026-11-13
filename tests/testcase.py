@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from helium_connector.models import Category, Course, CourseGroup, Event, Homework, Meeting, Repeat, TermPlan, \
+from helium_connector.models import Category, Course, CourseGroup, Event, Homework, Meeting, TermPlan, \
     WeeklySchedule
 
 TOKEN = "good-token"
@@ -76,7 +76,7 @@ def given_a_plan(**changes: Any) -> TermPlan:
                    homework=[Homework(title="Essay 1", due_date=date(2026, 10, 2))]),
         ],
         events=[Event(title="Office Hours", start_date=date(2026, 9, 1), start_time=time(15), end_time=time(16),
-                      repeat=Repeat(days=["tuesday"], until=date(2026, 9, 8)))],
+                      recurrence_rule="FREQ=WEEKLY;BYDAY=TU;UNTIL=20260908")],
     )
     return plan.model_copy(update=changes)
 

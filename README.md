@@ -89,8 +89,9 @@ For assistants that offer prompts, these are listed alongside the tools:
 
 #### Permissions
 
-Signing in grants the `planner:read` and `planner:import` scopes, shown on Helium's consent screen and described in
-its [API documentation](https://api.heliumedu.com/docs/). `import_term` and `import_ics` are the only writes, and they
+Signing in grants the `planner:read` and `planner:import` scopes, plus `planner:notes:read` if the user checks it,
+shown on Helium's consent screen and described in its [API documentation](https://api.heliumedu.com/docs/).
+`list_notes` works only with `planner:notes:read`. `import_term` and `import_ics` are the only writes, and they
 only add to Helium: no tool sends messages, makes payments, or changes or deletes anything.
 
 ### Plugin Package

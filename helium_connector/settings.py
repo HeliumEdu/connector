@@ -4,14 +4,10 @@ from typing import Final
 
 from heliumedu.client import DEFAULT_API_URL
 
-#: Where the Helium web app is (links in tool results point here).
 DEFAULT_APP_URL: Final = "https://app.heliumedu.com"
-#: Where the connector itself is served.
 DEFAULT_CONNECTOR_URL: Final = "https://mcp.heliumedu.com"
-#: The path the MCP endpoint is served at.
 MCP_PATH: Final = "/mcp"
-#: The scopes clients are told to ask for: reading the planner, and importing a term.
-SCOPES: Final = ("planner:read", "planner:import")
+SCOPES: Final = ("planner:read", "planner:notes:read", "planner:import")
 
 
 @dataclass(frozen=True)
