@@ -13,14 +13,15 @@ from dateutil.rrule import rrulestr
 
 from helium_connector.models import WEEKDAYS, Course, CourseGroup, CycleSlot, DayCycleSchedule, Event, Homework, \
     Meeting, Schedule, TermPlan, Weekday, WeekRotationSchedule
-from helium_connector.platform_enums import RECURRENCE_HORIZON_YEARS, UNGRADED
-from helium_connector.reads import describe_numbered_days, occurs_within_horizon
+from helium_connector.platform_enums import GRADE_SCALE_PRESETS, RECURRENCE_HORIZON_YEARS, UNGRADED
+from helium_connector.reads import describe_numbered_days, grade_scale_name, occurs_within_horizon
 
 MAX_ASSIGNMENTS: Final = 1000
 MAX_EVENTS: Final = 500
 
 _MAX_EXPANDED_OCCURRENCES = max(MAX_ASSIGNMENTS, MAX_EVENTS) + 1
 _ROW_ERROR = re.compile(r"^(?P<section>\w+) id (?P<row_id>\d+), (?P<field>\w+): (?P<message>.+)$", re.DOTALL)
+_PLAN_FIELD_NAMES = {"grade_scale_template": "grade_scale", "exceptions": "no_class_dates"}
 _SECTION_NAMES = {"course_groups": "terms", "courses": "classes", "course_schedules": "schedules",
                   "categories": "categories", "homework": "assignments", "events": "events"}
 _SHORT_DAYS = {"sunday": "Sun", "monday": "Mon", "tuesday": "Tue", "wednesday": "Wed", "thursday": "Thu",
@@ -108,6 +109,9 @@ def to_confirm(plan: TermPlan) -> list[str]:
     :return: Each gap, naming the class and what it imports as.
     """
     gaps: list[str] = []
+    if "grade_scale" not in plan.course_group.model_fields_set:
+        gaps.append("Term: no grade scale, so it copies the student's most recent term's, or has none (no GPA) if "
+                    "it's their first.")
     for course in plan.courses:
         name = f"Class '{course.title}'"
         if course.credits is None:
@@ -138,14 +142,17 @@ def existing_term(course_group: dict[str, Any]) -> CourseGroup:
     return CourseGroup.model_construct(title=course_group["title"],
                                        start_date=date.fromisoformat(course_group["start_date"]),
                                        end_date=date.fromisoformat(course_group["end_date"]),
-                                       no_class_dates=no_class_dates)
+                                       no_class_dates=no_class_dates,
+                                       grade_scale=grade_scale_name(course_group.get("grade_scale_template")))
 
 
-def summarize(plan: TermPlan) -> dict[str, Any]:
+def summarize(plan: TermPlan, term_grade_scale: str | None = None) -> dict[str, Any]:
     """
     Describe what a plan creates, for the student to confirm.
 
     :param plan: The plan.
+    :param term_grade_scale: An existing term's grade scale as ``list_classes`` names it (``custom`` included), in
+        place of the plan term's preset.
     :return: The term, each class, and the totals.
     """
     courses = []
@@ -156,6 +163,7 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
         points_based = bool(course.categories) and all(category.weight == 0 for category in course.categories)
         courses.append({
             "title": course.title,
+            "grade_scale": course.grade_scale,
             "meets": [_describe_schedule(schedule) for schedule in course.schedules],
             "grading": None if not course.categories else "points-based" if points_based else "weighted",
             "categories": [category.title if points_based else f"{category.title} ({category.weight}%)"
@@ -182,6 +190,7 @@ def summarize(plan: TermPlan) -> dict[str, Any]:
     return {
         "term": {"title": plan.course_group.title, "start_date": plan.course_group.start_date.isoformat(),
                  "end_date": plan.course_group.end_date.isoformat(),
+                 "grade_scale": term_grade_scale or plan.course_group.grade_scale,
                  "no_class_dates": len(plan.course_group.no_class_dates)},
         "classes": courses,
         "events": listed_events,
@@ -213,6 +222,8 @@ def build_import(plan: TermPlan, time_zone: ZoneInfo) -> ImportPayload:
                                   "start_date": course_group.start_date.isoformat(),
                                   "end_date": course_group.end_date.isoformat(), "shown_on_calendar": True,
                                   "exceptions": _exceptions(course_group.no_class_dates)})
+    if course_group.grade_scale:
+        data["course_groups"][0]["grade_scale_template"] = GRADE_SCALE_PRESETS[course_group.grade_scale]
     labels[("course_groups", 1)] = f"Term '{course_group.title}'"
 
     for course_id, course in enumerate(plan.courses, start=1):
@@ -224,6 +235,8 @@ def build_import(plan: TermPlan, time_zone: ZoneInfo) -> ImportPayload:
         for optional in ("room", "teacher_name", "teacher_email", "website"):
             if getattr(course, optional):
                 row[optional] = getattr(course, optional)
+        if course.grade_scale:
+            row["grade_scale_template"] = GRADE_SCALE_PRESETS[course.grade_scale]
         data["courses"].append(row)
         labels[("courses", course_id)] = f"Class '{course.title}'"
 
@@ -680,5 +693,6 @@ def _explain_row_error(section: str, error: str, labels: dict[tuple[str, int], s
     if match:
         label = labels.get((match["section"], int(match["row_id"])))
         if label:
-            return f"{label}: {match['field'].replace('_', ' ')}: {match['message']}"
+            field = _PLAN_FIELD_NAMES.get(match["field"], match["field"])
+            return f"{label}: {field.replace('_', ' ')}: {match['message']}"
     return f"{section.replace('_', ' ')}: {error}"

@@ -74,7 +74,7 @@ Ask your assistant to import a term from your syllabi, or about your planner, an
 | `list_assignments`       | Read   | Assignments due in a window or matching text, with class, category, completion, grade |
 | `list_events`            | Read   | Events in a window or matching text, with repeating events listed per occurrence      |
 | `list_notes`             | Read   | Notes as plain text, optionally matching text or for one class or linked item         |
-| `list_classes`           | Read   | Classes by term, with meeting times, teacher, credits, and grading categories         |
+| `list_classes`           | Read   | Classes by term, with meeting times, teacher, credits, grading, and grade scales      |
 | `list_resources`         | Read   | Resources by resource group, with status, price, and the classes each is for          |
 | `get_grades`             | Read   | Grades and trends, per class and category, or the score a class needs for a grade     |
 

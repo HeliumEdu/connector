@@ -32,7 +32,8 @@ class TestBuildImport(unittest.TestCase):
 
         # THEN
         self.assertEqual([{"id": 1, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
-                           "shown_on_calendar": True, "exceptions": "20260907,20261126"}], data["course_groups"])
+                           "shown_on_calendar": True, "exceptions": "20260907,20261126",
+                           "grade_scale_template": 2}], data["course_groups"])
         bio, eng = data["courses"]
         self.assertEqual({"id": 1, "course_group": 1, "title": "BIO 151", "credits": "4.00", "is_online": False,
                           "start_date": "2026-08-31", "end_date": "2026-12-18", "exceptions": "",
@@ -41,6 +42,30 @@ class TestBuildImport(unittest.TestCase):
         self.assertEqual("0.00", eng["credits"])
         self.assertNotIn("room", eng)
         self.assertNotIn("website", eng)
+        self.assertNotIn("grade_scale_template", eng)
+
+    def test_class_grade_scale(self) -> None:
+        # GIVEN
+        plan = given_a_plan()
+        plan.courses[1] = plan.courses[1].model_copy(update={"grade_scale": "4.0"})
+
+        # WHEN
+        data = build_import(plan, ZoneInfo("America/Chicago")).data
+
+        # THEN
+        self.assertNotIn("grade_scale_template", data["courses"][0])
+        self.assertEqual(1, data["courses"][1]["grade_scale_template"])
+
+    def test_term_without_a_grade_scale_leaves_it_to_helium(self) -> None:
+        # GIVEN
+        plan = given_a_plan(course_group=CourseGroup(title="Fall 2026", start_date=date(2026, 8, 31),
+                                                     end_date=date(2026, 12, 18)))
+
+        # WHEN
+        data = build_import(plan, ZoneInfo("America/Chicago")).data
+
+        # THEN
+        self.assertNotIn("grade_scale_template", data["course_groups"][0])
 
     def test_meetings_on_the_same_day_get_separate_schedules(self) -> None:
         # GIVEN
@@ -601,6 +626,18 @@ class TestWarningsAndSummary(unittest.TestCase):
                           "Class 'ENG 101': no grading categories, so its assignments go in Uncategorized.",
                           "Class 'ENG 101': 1 assignment(s) have no due time, so they're all-day."], gaps)
 
+    def test_to_confirm_term_without_a_grade_scale(self) -> None:
+        # GIVEN
+        plan = given_a_plan(course_group=CourseGroup(title="Fall 2026", start_date=date(2026, 8, 31),
+                                                     end_date=date(2026, 12, 18)))
+
+        # WHEN
+        gaps = to_confirm(plan)
+
+        # THEN
+        self.assertEqual("Term: no grade scale, so it copies the student's most recent term's, or has none (no GPA) "
+                         "if it's their first.", gaps[0])
+
     def test_to_confirm_in_person_class_without_details(self) -> None:
         # GIVEN
         plan = given_a_plan(courses=[
@@ -637,6 +674,19 @@ class TestWarningsAndSummary(unittest.TestCase):
 
         # THEN
         self.assertEqual([], term.no_class_dates)
+
+    def test_existing_term_carries_its_grade_scale(self) -> None:
+        # WHEN
+        preset = existing_term({"id": 4, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
+                                "grade_scale_template": 2})
+        custom = existing_term({"id": 5, "title": "Abroad", "start_date": "2026-08-31", "end_date": "2026-12-18",
+                                "grade_scale_template": None})
+
+        # THEN
+        self.assertEqual("4.0 with +/-", preset.grade_scale)
+        self.assertIsNone(custom.grade_scale)
+        self.assertEqual([], to_confirm(given_a_plan(course_group=custom, courses=[])),
+                         "an existing term's scale is already set, so there's nothing to confirm")
 
     def test_repeated_classes_and_events_outside_the_term(self) -> None:
         # GIVEN
@@ -683,6 +733,10 @@ class TestWarningsAndSummary(unittest.TestCase):
         self.assertEqual(["Mon/Wed/Fri 10:00-10:50; Mon 14:00-16:50"], bio["meets"])
         self.assertEqual("weighted", bio["grading"])
         self.assertEqual(["Homework (40%)", "Exams (60%)"], bio["categories"])
+        self.assertEqual("4.0 with +/-", summary["term"]["grade_scale"])
+        self.assertIsNone(bio["grade_scale"])
+        self.assertEqual("custom", summarize(plan, "custom")["term"]["grade_scale"],
+                         "an existing term's scale is named as list_classes names it")
         self.assertEqual(("2026-09-14", "2026-12-14"), (bio["first_due"], bio["last_due"]))
         self.assertIsNone(summary["classes"][1]["grading"])
         self.assertEqual([{"title": "Office Hours", "time": "15:00-16:00", "first": "2026-09-01",
@@ -761,6 +815,19 @@ class TestExplainPlatformErrors(unittest.TestCase):
         self.assertEqual(["Assignment 'Final Exam' (BIO 151): current grade: Ensure this value is valid.",
                           "courses: Unresolved `course_group` reference `7` in courses.",
                           "details: Invalid JSON in file."], messages)
+
+    def test_names_plan_fields_in_helium_errors(self) -> None:
+        # GIVEN
+        payload = build_import(given_a_plan(), ZoneInfo("America/Chicago"))
+        errors = {"courses": ["courses id 1, grade_scale_template: Doesn't fit the group's grade scale.",
+                              "courses id 2, exceptions: 20270104 is outside the class date range."]}
+
+        # WHEN
+        messages = explain_platform_errors(errors, payload.labels)
+
+        # THEN
+        self.assertEqual(["Class 'BIO 151': grade scale: Doesn't fit the group's grade scale.",
+                          "Class 'ENG 101': no class dates: 20270104 is outside the class date range."], messages)
 
     def test_unexplained(self) -> None:
         # WHEN

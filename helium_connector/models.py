@@ -4,6 +4,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from helium_connector.platform_enums import GradeScalePreset
+
 Weekday = Literal["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 Title = Annotated[str, Field(min_length=1)]
 
@@ -131,6 +133,11 @@ class Course(_Input):
     credits: Decimal | None = Field(default=None,
                                     description="Credit hours. Syllabi often leave these out, though the student "
                                                 "knows them. Unset imports as 0.")
+    grade_scale: GradeScalePreset | None = Field(
+        default=None,
+        description="The class's own grade scale, only when its syllabus grades differently from the term's (whole "
+                    "letters in a term graded with +/-, say). preview_import_term reports one Helium doesn't accept "
+                    "for the term. Unset uses the term's.")
     room: str | None = Field(default=None, description="Where the class meets in person.")
     is_online: bool = Field(default=False, description="The class meets online, with no room.")
     teacher_name: str | None = None
@@ -175,6 +182,10 @@ class CourseGroup(_Input):
     end_date: date
     no_class_dates: list[date] = Field(default_factory=list, max_length=366,
                                        description="Days no class meets (holidays, breaks).")
+    grade_scale: GradeScalePreset | None = Field(
+        default=None,
+        description="The school's grade scale, which turns class grades into grade points for GPA. Unset copies the "
+                    "student's most recent term's, or none (no GPA) for their first term.")
 
 
 class TermPlan(_Input):

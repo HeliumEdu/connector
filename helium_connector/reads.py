@@ -11,7 +11,8 @@ from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 
 from helium_connector.models import WEEKDAYS
-from helium_connector.platform_enums import NO_GRADE, RECURRENCE_HORIZON_YEARS, RESOURCE_CONDITIONS, RESOURCE_STATUSES
+from helium_connector.platform_enums import GRADE_SCALE_PRESETS, NO_GRADE, RECURRENCE_HORIZON_YEARS, \
+    RESOURCE_CONDITIONS, RESOURCE_STATUSES
 
 MAX_NOTE_CHARS: Final = 4000
 
@@ -46,6 +47,7 @@ def shape_classes(course_groups: list[dict[str, Any]],
             "end_date": group["end_date"],
             "no_class_dates": _no_class_dates(group.get("exceptions")),
             "overall_grade": _grade(group.get("overall_grade")),
+            "grade_scale": term_grade_scale_name(group),
             "classes": [_shape_class(course, schedules, categories) for course in courses
                         if course.get("course_group") == group["id"]],
         })
@@ -154,17 +156,14 @@ def shape_grades(grades: dict[str, Any], term_ids: set[int] | None = None) -> di
         "overall_grade": _grade(group.get("overall_grade")),
         "gpa": _grade(group.get("gpa")),
         "counts_toward_cumulative_gpa": bool(group.get("in_cumulative_gpa")),
-        "grade_scale": [{
-            "label": band["label"] or None,
-            "min_grade": band["min_grade"],
-            "grade_point": band["grade_point"],
-        } for band in group["grade_scale"]],
+        "grade_scale": _bands(group["grade_scale"]),
         "trend": _trend(group.get("trend")),
         "classes": [{
             "id": course["id"],
             "title": course["title"],
             "overall_grade": _grade(course.get("overall_grade")),
             "grade_point": _grade(course.get("grade_point")),
+            "grade_scale": None if course.get("grade_scale_template") is None else _bands(course["grade_scale"]),
             "credits": course.get("credits"),
             "trend": _trend(course.get("trend")),
             "weighted": bool(course.get("has_weighted_grading")),
@@ -296,6 +295,7 @@ def _shape_class(course: dict[str, Any],
         "teacher_email": course.get("teacher_email") or None,
         "website": course.get("website") or None,
         "credits": course.get("credits"),
+        "grade_scale": grade_scale_name(course.get("grade_scale_template")),
         "start_date": course.get("start_date"),
         "end_date": course.get("end_date"),
         "no_class_dates": _no_class_dates(course.get("exceptions")),
@@ -436,3 +436,26 @@ def _grade(value: Any) -> float | None:
         return None
     grade = float(value)
     return None if grade == NO_GRADE else _as_shown(grade, places=2)
+
+
+def _bands(grade_scale: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{"label": band["label"] or None, "min_grade": band["min_grade"], "grade_point": band["grade_point"]}
+            for band in grade_scale]
+
+
+def grade_scale_name(template: int | None) -> str | None:
+    """
+    :param template: A ``grade_scale_template`` id.
+    :return: The preset's name, or None for no preset.
+    """
+    return next((name for name, preset in GRADE_SCALE_PRESETS.items() if preset == template), None)
+
+
+def term_grade_scale_name(group: dict[str, Any]) -> str | None:
+    """
+    :param group: A class group, as ``GET /planner/coursegroups/`` returns it.
+    :return: Its grade scale's preset name, ``custom`` for one that matches no preset, or None for no scale.
+    """
+    if not group.get("grade_scale"):
+        return None
+    return grade_scale_name(group.get("grade_scale_template")) or "custom"

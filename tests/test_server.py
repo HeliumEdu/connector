@@ -392,6 +392,22 @@ class TestImportIntoAnExistingTerm(McpTestCase):
         request = self.helium.requested("POST", "/importexport/import/")[0]
         self.assertEqual(("true", "4"), (request.url.params["dry_run"], request.url.params["course_group"]))
 
+    async def test_preview_names_an_existing_terms_custom_grade_scale(self) -> None:
+        # GIVEN
+        custom = [{"min_grade": 0.0, "grade_point": 0.0, "label": "Fail"},
+                  {"min_grade": 50.0, "grade_point": 2.0, "label": "Pass"}]
+        self.helium.answer("GET", "/planner/coursegroups/", 200,
+                           [{**self.TERM, "grade_scale": custom, "grade_scale_template": None}])
+
+        # WHEN
+        result = await self.call("preview_import_term", plan=self.classes_arguments())
+
+        # THEN
+        content = result["structuredContent"]
+        self.assertTrue(content["ready"], content)
+        self.assertEqual("custom", content["summary"]["term"]["grade_scale"],
+                         "the summary names the scale as list_classes does")
+
     async def test_import_into_an_existing_term(self) -> None:
         # GIVEN
         self.helium.answer("POST", "/importexport/import/", 200,

@@ -19,7 +19,7 @@ from helium_connector.models import ExistingTerm, ImportPlan, TermPlan
 from helium_connector.planning import build_import, describe_import, existing_term, explain_platform_errors, \
     summarize, to_confirm, validate, warnings
 from helium_connector.reads import due_between, expand_events, shape_assignments, shape_classes, \
-    shape_grades, shape_needed_grade, shape_notes, shape_resources
+    shape_grades, shape_needed_grade, shape_notes, shape_resources, term_grade_scale_name
 from helium_connector.settings import Settings
 from heliumedu.client import HeliumClient
 from heliumedu.exception import (
@@ -66,9 +66,10 @@ INSTRUCTIONS: Final = (
     "its class with import_ics.\n\n"
     "Syllabi often leave out what the student knows: the term's dates and days off, credits, the room or whether a "
     "class is online, meeting times that differ by day, whether a lecture and its lab are graded together, the "
-    "grading scheme, the days and last date of recurring work, and due times for work due in class. Ask the student "
-    "about anything the sources leave unclear rather than guessing, and leave a value unset when it's still "
-    "unknown.\n\n"
+    "grading scheme, the school's grade scale for GPA, the days and last date of recurring work, and due times for "
+    "work due in class. Ask the student about anything the sources leave unclear rather than guessing, and leave a "
+    "value unset when it's still unknown. A term's grade scale comes from the school; give a class its own only when "
+    "its syllabus grades differently (whole letters in a term graded with +/-, say).\n\n"
     "preview_import_term and preview_import_ics check an import with Helium without saving anything. "
     "preview_import_term returns problems to fix, warnings, what the plan leaves unset (to_confirm), and a summary to "
     "confirm with the student before importing. Dates and times in a plan are local: Helium places them in "
@@ -101,6 +102,7 @@ fill gaps from what's typical. Ask especially about:
    - the days and last date of recurring work, like weekly problem sets, when the syllabus doesn't list its dates
    - the time of day for work due in class or due "that week"
    - how each class is graded: weighted categories and their weights, or points
+   - my school's grade scale for GPA (like 4.0 with +/-), and any class whose syllabus grades differently
    - which class each calendar file is for
    If something is still unknown after asking, leave it out rather than guessing.
 3. Check the plan with preview_import_term. Fix every problem it lists, and ask me about what it lists under \
@@ -182,6 +184,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         outcome = "ready" if dry_run else "imported"
         async with helium() as (client, time_zone):
             course_group_id = None
+            term_grade_scale = None
             if isinstance(plan.course_group, ExistingTerm):
                 course_group_id = plan.course_group.id
                 course_group = next((group for group in await client.list_course_groups()
@@ -190,6 +193,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                     return {outcome: False, "problems": [f"Term {course_group_id} isn't in Helium. list_classes "
                                                          f"gives each term's id."]}
                 term = existing_term(course_group)
+                term_grade_scale = term_grade_scale_name(course_group)
             else:
                 term = plan.course_group
             term_plan = TermPlan(term=term, classes=plan.courses, events=plan.events)
@@ -198,7 +202,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                 problems = await _duplicates(client, term_plan, course_group_id)
             if problems:
                 return {outcome: False, "problems": problems, **_notes(term_plan)}
-            return await send(client, time_zone, term_plan, dry_run=dry_run, course_group_id=course_group_id)
+            return await send(client, time_zone, term_plan, dry_run=dry_run, course_group_id=course_group_id,
+                              term_grade_scale=term_grade_scale)
 
     async def import_ics_file(ics: str, course_id: int | None, *, dry_run: bool) -> dict[str, Any]:
         outcome = "ready" if dry_run else "imported"
@@ -221,7 +226,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                    plan: TermPlan,
                    *,
                    dry_run: bool,
-                   course_group_id: int | None = None) -> dict[str, Any]:
+                   course_group_id: int | None = None,
+                   term_grade_scale: str | None = None) -> dict[str, Any]:
         outcome = "ready" if dry_run else "imported"
         payload = build_import(plan, time_zone)
         try:
@@ -231,10 +237,11 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                     "problems": explain_platform_errors((e.meta or {}).get("errors"), payload.labels)}
         if dry_run:
             return {"ready": True, "saved": False, "before_import": BEFORE_IMPORT, "time_zone": time_zone.key,
-                    "summary": summarize(plan), **_notes(plan)}
+                    "summary": summarize(plan, term_grade_scale), **_notes(plan)}
         logger.info(f"Imported {len(plan.courses)} class(es)")
         return {"imported": True, **describe_import(plan, result.counts, result.ids, course_group_id),
-                **_notes(plan), "summary": summarize(plan), "open_in_helium": f"{settings.app_url}/classes"}
+                **_notes(plan), "summary": summarize(plan, term_grade_scale),
+                "open_in_helium": f"{settings.app_url}/classes"}
 
     @server.tool(title="Preview a term import",
                  description="Check a term's assignments, events, classes, meeting times, and grading categories "
@@ -402,8 +409,9 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                 "notes": shape_notes(notes.items, courses, time_zone, limit)}
 
     @server.tool(title="List classes",
-                 description="List the user's classes by term, with room, teacher, credits, current grade, meeting "
-                             "times, and grading categories.",
+                 description="List the user's classes by term, with the term's grade scale, and each class's room, "
+                             "teacher, credits, current grade, meeting times, grading categories, and its own grade "
+                             "scale when it has one.",
                  annotations=_reads("List classes"))
     async def list_classes(include_past_terms: bool = Field(default=False,
                                                             description="Include terms that have ended.")
@@ -430,7 +438,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
 
     @server.tool(title="Get grades",
                  description="Get the user's grades: each term's GPA, grade scale, and classes, with overall "
-                             "grade, grade point, credits, trend (up, down, or steady), weighted or points-based "
+                             "grade, grade point, the class's own grade scale when it has one (else the term's "
+                             "applies), credits, trend (up, down, or steady), weighted or points-based "
                              "grading, and each category's weight, average, and ungraded assignments; plus "
                              "cumulative_gpa, across the terms on the same grade scale as the most recent term with "
                              "one, other than the example schedule. A grade counts only assignments marked complete "

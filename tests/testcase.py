@@ -59,7 +59,7 @@ def uploaded_import(request: httpx.Request) -> dict[str, Any]:
 def given_a_plan(**changes: Any) -> TermPlan:
     plan = TermPlan(
         course_group=CourseGroup(title="Fall 2026", start_date=date(2026, 8, 31), end_date=date(2026, 12, 18),
-                                 no_class_dates=[date(2026, 9, 7), date(2026, 11, 26)]),
+                                 no_class_dates=[date(2026, 9, 7), date(2026, 11, 26)], grade_scale="4.0 with +/-"),
         courses=[
             Course(title="BIO 151", credits=Decimal("4.00"), room="Bagley 131", teacher_name="Dr. Smith",
                    teacher_email="smith@example.edu",

@@ -50,6 +50,23 @@ class TestShapeClasses(unittest.TestCase):
         self.assertIsNone(bio["teacher_email"])
         self.assertIsNone(bio["current_grade"])
 
+    def test_grade_scales(self) -> None:
+        # GIVEN
+        plus_minus = [{"min_grade": 0.0, "grade_point": 0.0, "label": "F"},
+                      {"min_grade": 90.0, "grade_point": 3.7, "label": "A-"}]
+        groups = [{**COURSE_GROUPS[1], "id": 2, "grade_scale": plus_minus, "grade_scale_template": 2},
+                  {**COURSE_GROUPS[1], "id": 3, "grade_scale": plus_minus, "grade_scale_template": None},
+                  {**COURSE_GROUPS[1], "id": 4, "grade_scale": [], "grade_scale_template": 0}]
+        courses = [{**COURSES[0], "course_group": 2, "grade_scale_template": 1},
+                   {**COURSES[0], "id": 12, "course_group": 2, "grade_scale_template": None}]
+
+        # WHEN
+        terms = shape_classes(groups, courses, [], [], date(2026, 10, 1), False)
+
+        # THEN
+        self.assertEqual(["4.0 with +/-", "custom", None], [term["grade_scale"] for term in terms])
+        self.assertEqual(["4.0", None], [course["grade_scale"] for course in terms[0]["classes"]])
+
     def test_dates_and_grading(self) -> None:
         # GIVEN
         groups = [{**COURSE_GROUPS[1], "exceptions": "20260907,20261126"}]
@@ -444,6 +461,28 @@ class TestShapeGrades(unittest.TestCase):
         self.assertEqual([(3.25, "4.00"), (3.0, "4.00"), (None, "0.00")],
                          [(course["grade_point"], course["credits"]) for course in term["classes"]])
         self.assertEqual(3.33, shaped["cumulative_gpa"])
+
+    def test_class_with_its_own_grade_scale(self) -> None:
+        # GIVEN
+        whole_letter = [{"min_grade": 0.0, "grade_point": 0.0, "label": "F"},
+                        {"min_grade": 90.0, "grade_point": 4.0, "label": "A"}]
+        plus_minus = [{"min_grade": 0.0, "grade_point": 0.0, "label": "F"},
+                      {"min_grade": 90.0, "grade_point": 3.7, "label": "A-"}]
+        own = {"id": 10, "title": "BIO 151", "overall_grade": 91, "grade_point": 4.0, "credits": "4.00",
+               "grade_scale_template": 1, "grade_scale": whole_letter, "categories": []}
+        term_scale = {"id": 11, "title": "CHEM 101", "overall_grade": 91, "grade_point": 3.7, "credits": "4.00",
+                      "grade_scale_template": None, "grade_scale": plus_minus, "categories": []}
+        grades = {"course_groups": [{"id": 2, "title": "Fall 2026", "overall_grade": 91, "gpa": 3.85,
+                                     "in_cumulative_gpa": True, "grade_scale": plus_minus,
+                                     "courses": [own, term_scale]}],
+                  "cumulative_gpa": 3.85}
+
+        # WHEN
+        classes = shape_grades(grades)["terms"][0]["classes"]
+
+        # THEN
+        self.assertEqual(["F", "A"], [band["label"] for band in classes[0]["grade_scale"]])
+        self.assertIsNone(classes[1]["grade_scale"], "a class on its term's scale doesn't repeat it")
 
     def test_term_on_another_scale_doesnt_count_toward_cumulative(self) -> None:
         # GIVEN
