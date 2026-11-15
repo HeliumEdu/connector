@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "MCP connector for Helium - Student Planner: import a term from syllabi and read your planner from an AI assistant"
 readme = "README.md"
 license = "Apache-2.0"
-keywords = ["helium", "student-planner", "mcp", "syllabus", "education"]
+keywords = ["helium", "student-planner", "mcp", "syllabus", "semester", "quarter", "education"]
 authors = [{ name = "Alex Laird", email = "contact@alexlaird.com" }]
 maintainers = [{ name = "Alex Laird", email = "contact@alexlaird.com" }]
 requires-python = ">=3.13"
