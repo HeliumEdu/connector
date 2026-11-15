@@ -242,6 +242,18 @@ class TestListing(HeliumClientTestCase):
         params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
         self.assertEqual({"course": "10", "target": "2", "desired_grade": "85"}, dict(params))
 
+    async def test_needed_grade_for_a_gpa(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/needed/", 200, {"state": "achievable", "needed_grade": 90.0})
+        client = self.given_client()
+
+        # WHEN
+        await client.get_needed_grade(10, 2, desired_gpa=3.35)
+
+        # THEN
+        params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
+        self.assertEqual({"course": "10", "target": "2", "desired_gpa": "3.35"}, dict(params))
+
     async def test_notes_page_past_the_last(self) -> None:
         # GIVEN
         pages = {"1": httpx.Response(200, json={"count": 3, "next": None, "results": [{"id": 1}, {"id": 2}]}),

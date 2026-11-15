@@ -585,7 +585,8 @@ class TestPrompts(McpTestCase):
 
         # THEN
         instructions = response.json()["result"]["instructions"]
-        self.assertIn("use get_grades with target_grade rather than calculating it", instructions)
+        self.assertIn("to reach a class grade or a term GPA, use get_grades with target_grade or target_gpa "
+                      "rather than calculating it", instructions)
 
     async def test_instructions_put_overdue_work_first_and_explain_ungraded_work(self) -> None:
         # WHEN
@@ -786,7 +787,7 @@ class TestReads(McpTestCase):
         self.assertEqual({"class_id": 10, "target_grade": 85, "outcome": "achievable", "needed_grade": 76.3,
                           "category": "Exams",
                           "assignment": {"title": "Final", "points_possible": 100.0, "needed_points": 76.3},
-                          "total_weight": None}, content)
+                          "total_weight": None, "grade_band": None}, content)
         params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
         self.assertEqual({"course": "10", "target": "3", "desired_grade": "85.0"}, dict(params))
         self.assertEqual([], self.helium.requested("GET", "/planner/grades/"))
@@ -802,6 +803,41 @@ class TestReads(McpTestCase):
         # THEN
         self.assertEqual({"problems": ["Choose a category with weight and exactly one assignment left."]},
                          result["structuredContent"])
+
+    async def test_needed_grade_for_a_gpa(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/needed/", 200, {
+            "state": "achievable", "needed_grade": 90.0, "weighted": False, "category": None,
+            "assignment": {"id": 9, "title": "Project", "points_possible": 100.0, "needed_points": 90.0},
+            "total_weight_accounted_for": None, "grade_band": {"min_grade": 90.0, "grade_point": 3.7, "label": "A-"}})
+
+        # WHEN
+        result = await self.call("get_grades", target_gpa=3.35, class_id=10, target_id=9)
+
+        # THEN
+        content = result["structuredContent"]
+        self.assertEqual({"class_id": 10, "target_gpa": 3.35, "outcome": "achievable", "needed_grade": 90.0,
+                          "category": None,
+                          "assignment": {"title": "Project", "points_possible": 100.0, "needed_points": 90.0},
+                          "total_weight": None, "grade_band": {"label": "A-", "min_grade": 90.0, "grade_point": 3.7}},
+                         content)
+        params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
+        self.assertEqual({"course": "10", "target": "9", "desired_gpa": "3.35"}, dict(params))
+
+    async def test_needed_grade_takes_a_grade_or_a_gpa_not_both(self) -> None:
+        # WHEN
+        result = await self.call("get_grades", target_grade=85, target_gpa=3.5, class_id=10, target_id=3)
+
+        # THEN
+        self.assertEqual({"problems": ["Give target_grade or target_gpa, not both."]}, result["structuredContent"])
+        self.assertEqual([], self.helium.requested("GET", "/planner/grades/needed/"))
+
+    async def test_needed_grade_for_a_gpa_needs_a_class_and_target(self) -> None:
+        # WHEN
+        result = await self.call("get_grades", target_gpa=3.5, class_id=10)
+
+        # THEN
+        self.assertEqual({"problems": ["target_gpa needs class_id and target_id."]}, result["structuredContent"])
 
     async def test_needed_grade_needs_a_class_and_target(self) -> None:
         # WHEN

@@ -81,8 +81,9 @@ INSTRUCTIONS: Final = (
     "what's due soon, today's meeting times and events (for the time they have free), and grades with their trends. "
     "Suggest a few things that fit their time: overdue work and what's due soonest first, then heavily weighted work "
     "and classes whose grade is down, counting the priority they've set. Let them choose. For the score needed on "
-    "remaining work, use get_grades with target_grade rather than calculating it. Help them plan and study, but "
-    "don't do graded work for them.\n\n"
+    "remaining work to reach a class grade or a term GPA, use get_grades with target_grade or target_gpa rather than "
+    "calculating it. "
+    "Help them plan and study, but don't do graded work for them.\n\n"
     "The student chooses whether to let these tools read their notes when they connect Helium. If list_notes says it "
     "wasn't given access, go on without notes, and tell the student they can reconnect Helium and allow notes."
 )
@@ -120,7 +121,8 @@ and my grades and their trends.
 and classes whose grade is down. Count the priority I've set on assignments, and say why each one made the list.
 4. For an exam coming up, suggest spreading review over the days before it, and quizzing myself from that class's \
 notes (list_notes with its class_id), if Helium lets you read them.
-5. If I ask what I need on remaining work, use get_grades with target_grade; don't calculate it.
+5. If I ask what I need on remaining work to reach a class grade or a term GPA, use get_grades with target_grade \
+or target_gpa; don't calculate it.
 6. Let me choose. Help me plan and study, but don't do graded work for me."""
 
 Status = Literal["all", "incomplete", "completed", "overdue"]
@@ -165,12 +167,18 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         except HeliumError as e:
             raise _tool_error(e) from e
 
-    async def needed_grade(target_grade: float, class_id: int | None, target_id: int | None) -> dict[str, Any]:
+    async def needed_grade(target_grade: float | None,
+                           target_gpa: float | None,
+                           class_id: int | None,
+                           target_id: int | None) -> dict[str, Any]:
+        target, wanted = ("target_gpa", target_gpa) if target_grade is None else ("target_grade", target_grade)
+        if target_grade is not None and target_gpa is not None:
+            return {"problems": ["Give target_grade or target_gpa, not both."]}
         if class_id is None or target_id is None:
-            return {"problems": ["target_grade needs class_id and target_id."]}
+            return {"problems": [f"{target} needs class_id and target_id."]}
         async with helium() as (client, _):
             try:
-                needed = await client.get_needed_grade(class_id, target_id, target_grade)
+                needed = await client.get_needed_grade(class_id, target_id, target_grade, desired_gpa=target_gpa)
             except HeliumValidationError as e:
                 errors = (e.meta or {}).get("errors")
                 messages = errors.values() if isinstance(errors, dict) else [errors]
@@ -178,7 +186,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                                      for message in (value if isinstance(value, list) else [value])]}
             except HeliumNotFoundError:
                 return {"problems": [f"Class {class_id} isn't in Helium. get_grades gives each class's id."]}
-        return {"class_id": class_id, "target_grade": target_grade, **shape_needed_grade(needed)}
+        return {"class_id": class_id, target: wanted, **shape_needed_grade(needed)}
 
     async def import_plan(plan: ImportPlan, *, dry_run: bool, allow_duplicates: bool) -> dict[str, Any]:
         outcome = "ready" if dry_run else "imported"
@@ -445,24 +453,29 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              "one, other than the example schedule. A grade counts only assignments marked complete "
                              "with a grade entered; ungraded ones aren't counted against the student until they're "
                              "graded. A term has no GPA without a grade scale or a graded class with credits. "
-                             "With target_grade, class_id, and target_id, returns instead the score Helium "
-                             "calculates the class needs to reach target_grade.",
+                             "With target_grade or target_gpa, class_id, and target_id, returns instead the score "
+                             "Helium calculates the class needs to reach target_grade, or to reach the lowest grade "
+                             "on its scale (grade_band) that brings its term's GPA to target_gpa. With "
+                             "gpa_unreachable, grade_band is the top grade, and even it falls short.",
                  annotations=_reads("Get grades"))
     async def get_grades(include_past_terms: bool = Field(default=False,
                                                           description="Include terms that have ended."),
                          target_grade: float | None = Field(default=None,
                                                             description="The overall class grade wanted (0-100)."),
+                         target_gpa: float | None = Field(default=None,
+                                                          description="The term GPA wanted, in place of "
+                                                                      "target_grade."),
                          class_id: int | None = Field(default=None,
-                                                      description="With target_grade: the class (an id from "
-                                                                  "get_grades)."),
+                                                      description="With target_grade or target_gpa: the class (an id "
+                                                                  "from get_grades)."),
                          target_id: int | None = Field(default=None,
-                                                       description="With target_grade: in a weighted class, a "
-                                                                   "category down to its last ungraded "
+                                                       description="With target_grade or target_gpa: in a weighted "
+                                                                   "class, a category down to its last ungraded "
                                                                    "assignment; otherwise, an ungraded assignment "
                                                                    "(an id from list_assignments).")
                          ) -> dict[str, Any]:
-        if target_grade is not None:
-            return await needed_grade(target_grade, class_id, target_id)
+        if target_grade is not None or target_gpa is not None:
+            return await needed_grade(target_grade, target_gpa, class_id, target_id)
         async with helium() as (client, time_zone):
             grades = await client.get_grades()
             groups = await client.list_course_groups()

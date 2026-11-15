@@ -195,6 +195,7 @@ def shape_needed_grade(needed: dict[str, Any]) -> dict[str, Any]:
     """
     assignment = needed.get("assignment")
     category = needed.get("category")
+    grade_band = needed.get("grade_band")
     return {
         "outcome": needed["state"],
         "needed_grade": _as_shown(needed["needed_grade"]),
@@ -205,6 +206,7 @@ def shape_needed_grade(needed: dict[str, Any]) -> dict[str, Any]:
             "needed_points": _as_shown(assignment["needed_points"]),
         } if assignment else None,
         "total_weight": needed.get("total_weight_accounted_for"),
+        "grade_band": _bands([grade_band])[0] if grade_band else None,
     }
 
 

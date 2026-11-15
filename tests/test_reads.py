@@ -555,7 +555,21 @@ class TestShapeGrades(unittest.TestCase):
         # THEN
         self.assertEqual({"outcome": "achievable", "needed_grade": 83.3, "category": "Exams",
                           "assignment": {"title": "Final", "points_possible": 100.0, "needed_points": 83.3},
-                          "total_weight": None}, shaped)
+                          "total_weight": None, "grade_band": None}, shaped)
+
+    def test_needed_grade_for_an_unreachable_gpa_names_the_top_band(self) -> None:
+        # GIVEN
+        needed = {"state": "gpa_unreachable", "needed_grade": 0, "weighted": True,
+                  "category": {"id": 3, "title": "Exams"}, "assignment": None, "total_weight_accounted_for": None,
+                  "grade_band": {"min_grade": 97.0, "grade_point": 4.0, "label": "A+"}}
+
+        # WHEN
+        shaped = shape_needed_grade(needed)
+
+        # THEN
+        self.assertEqual({"outcome": "gpa_unreachable", "needed_grade": 0, "category": "Exams", "assignment": None,
+                          "total_weight": None, "grade_band": {"label": "A+", "min_grade": 97.0, "grade_point": 4.0}},
+                         shaped)
 
 
 class TestNotes(unittest.TestCase):

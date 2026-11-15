@@ -236,19 +236,30 @@ class HeliumClient:
         """
         return await self._get_object("/planner/grades/")
 
-    async def get_needed_grade(self, course_id: int, target_id: int, desired_grade: float) -> dict[str, Any]:
+    async def get_needed_grade(self,
+                               course_id: int,
+                               target_id: int,
+                               desired_grade: float | None = None,
+                               *,
+                               desired_gpa: float | None = None) -> dict[str, Any]:
         """
-        Get the score a class needs to reach a desired overall grade, as Helium's grade calculator works it out.
+        Get the score a class needs to reach a desired overall grade, or to bring its term to a desired GPA, as
+        Helium's grade calculator works it out.
 
         :param course_id: The class.
         :param target_id: In a weighted class, a category with weight and exactly one ungraded assignment left; in a
             points-based class, one of its ungraded assignments.
-        :param desired_grade: The desired overall class grade, 0-100.
+        :param desired_grade: The desired overall class grade, 0-100. Give this or ``desired_gpa``.
+        :param desired_gpa: The desired term GPA, on the class's grade scale. Give this or ``desired_grade``.
         :return: The result, as ``GET /planner/grades/needed/`` returns it.
         :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
-        return await self._get_object("/planner/grades/needed/", {"course": str(course_id), "target": str(target_id),
-                                                                  "desired_grade": str(desired_grade)})
+        params = {"course": str(course_id), "target": str(target_id)}
+        if desired_grade is not None:
+            params["desired_grade"] = str(desired_grade)
+        if desired_gpa is not None:
+            params["desired_gpa"] = str(desired_gpa)
+        return await self._get_object("/planner/grades/needed/", params)
 
     async def list_notes(self,
                          search: str | None = None,
