@@ -7,11 +7,12 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.routes import build_resource_metadata_url
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
-from mcp.types import CallToolResult, Icon, InputRequiredResult, Tool, ToolAnnotations
-from pydantic import Field, ValidationError
+from mcp.types import CallToolResult, Icon, InputRequiredResult, TextContent, Tool, ToolAnnotations
+from pydantic import AnyHttpUrl, Field, ValidationError
 
 from helium_connector import __version__
 from helium_connector.auth import AGENT, HeliumTokenVerifier
@@ -20,7 +21,7 @@ from helium_connector.planning import build_import, describe_import, existing_te
     summarize, to_confirm, validate, warnings
 from helium_connector.reads import due_between, expand_events, shape_assignments, shape_classes, \
     shape_grades, shape_needed_grade, shape_notes, shape_resources, term_grade_scale_name
-from helium_connector.settings import Settings
+from helium_connector.settings import SCOPES, Settings
 from heliumedu.client import HeliumClient
 from heliumedu.exception import (
     HeliumAuthError,
@@ -138,6 +139,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
     """
     verifier = HeliumTokenVerifier(settings.api_url, transport)
     server: MCPServer = HeliumServer(
+        resource_metadata_url=str(build_resource_metadata_url(AnyHttpUrl(settings.resource_url))),
         name="helium",
         title="Helium",
         instructions=INSTRUCTIONS,
@@ -256,7 +258,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              "against what Helium accepts, without saving anything: a new term, or classes for one "
                              "already in Helium. Returns every problem to fix, or a summary of what import_term would "
                              "create, with what the plan leaves unset.",
-                 annotations=_reads("Preview a term import"))
+                 annotations=_reads("Preview a term import"),
+                 meta=_requires("planner:import"))
     async def preview_import_term(plan: ImportPlan,
                                   allow_duplicates: bool = Field(
                                       default=False, description=DUPLICATES_DESCRIPTION)) -> dict[str, Any]:
@@ -267,7 +270,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              "Helium, all at once: as a new term, or into one already in Helium. Adds to the account; "
                              "changes nothing already there. preview_import_term shows what it would create.",
                  annotations=ToolAnnotations(title="Import a term", read_only_hint=False, destructive_hint=False,
-                                             idempotent_hint=False, open_world_hint=False))
+                                             idempotent_hint=False, open_world_hint=False),
+                 meta=_requires("planner:import"))
     async def import_term(plan: ImportPlan,
                           allow_duplicates: bool = Field(default=False,
                                                          description=DUPLICATES_DESCRIPTION)) -> dict[str, Any]:
@@ -277,7 +281,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                  description="Check an .ics calendar file against what Helium accepts, without saving anything: "
                              "how many assignments (in a class already in Helium) or events its entries would "
                              "become. Returns the problem if Helium can't import it.",
-                 annotations=_reads("Preview an .ics import"))
+                 annotations=_reads("Preview an .ics import"),
+                 meta=_requires("planner:import"))
     async def preview_import_ics(ics: str = Field(description=ICS_DESCRIPTION),
                                  class_id: int | None = Field(default=None,
                                                               description=ICS_CLASS_DESCRIPTION)) -> dict[str, Any]:
@@ -291,7 +296,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              "to the account; changes nothing already there. Importing the same file twice adds its "
                              "entries twice. preview_import_ics shows what it would create.",
                  annotations=ToolAnnotations(title="Import an .ics file", read_only_hint=False,
-                                             destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+                                             destructive_hint=False, idempotent_hint=False, open_world_hint=False),
+                 meta=_requires("planner:import"))
     async def import_ics(ics: str = Field(description=ICS_DESCRIPTION),
                          class_id: int | None = Field(default=None,
                                                       description=ICS_CLASS_DESCRIPTION)) -> dict[str, Any]:
@@ -315,7 +321,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              f"{DEFAULT_WINDOW_DAYS} days; for overdue, the past {MAX_WINDOW_DAYS} days; with a "
                              "query, the class's dates (with class_id) or the current terms. Returns limit at a "
                              "time, with total and has_more; pass page for the next.",
-                 annotations=_reads("List assignments"))
+                 annotations=_reads("List assignments"),
+                 meta=_requires("planner:read"))
     async def list_assignments(start_date: date | None = Field(default=None, description="First day (local)."),
                                end_date: date | None = Field(default=None, description="Last day (local)."),
                                class_id: int | None = Field(default=None,
@@ -365,7 +372,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              f"listed per occurrence. Defaults to the next {DEFAULT_WINDOW_DAYS} days; with a query, "
                              "the current terms. Returns limit at a time, with total and has_more; pass page "
                              "for the next.",
-                 annotations=_reads("List events"))
+                 annotations=_reads("List events"),
+                 meta=_requires("planner:read"))
     async def list_events(start_date: date | None = Field(default=None, description="First day (local)."),
                           end_date: date | None = Field(default=None, description="Last day (local)."),
                           query: str | None = Field(default=None,
@@ -385,7 +393,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              "class's (its own note and its assignments' and resources'), or the note on one "
                              "assignment, event, or resource. Returns limit at a time, with total and has_more; pass "
                              "page for the next. Works only if the student allowed notes when connecting Helium.",
-                 annotations=_reads("List notes"))
+                 annotations=_reads("List notes"),
+                 meta=_requires("planner:notes:read", "planner:read"))
     async def list_notes(query: str | None = Field(default=None,
                                                    description="Only notes whose title, text, or linked item "
                                                                "matches this text."),
@@ -410,8 +419,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                                                      event_id=event_id, resource_id=resource_id, page=page,
                                                      page_size=limit)
             except HeliumPermissionError as e:
-                raise ToolError("This Helium connection wasn't given access to notes. To allow it, reconnect Helium "
-                                "and check \"Read your notes\", then try again.") from e
+                raise ScopeRequiredError("This Helium connection wasn't given access to notes. To allow it, reconnect "
+                                         "Helium and check \"Read your notes\", then try again.") from e
             courses = await client.list_courses()
         return {"total": notes.total, "page": page, "has_more": notes.has_more,
                 "notes": shape_notes(notes.items, courses, time_zone, limit)}
@@ -420,7 +429,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                  description="List the user's classes by term, with the term's grade scale, and each class's room, "
                              "teacher, credits, current grade, meeting times, grading categories, and its own grade "
                              "scale when it has one.",
-                 annotations=_reads("List classes"))
+                 annotations=_reads("List classes"),
+                 meta=_requires("planner:read"))
     async def list_classes(include_past_terms: bool = Field(default=False,
                                                             description="Include terms that have ended.")
                            ) -> dict[str, Any]:
@@ -434,7 +444,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
     @server.tool(title="List resources",
                  description="List the user's resources (textbooks, materials, links) by resource group, with "
                              "status, condition, website, price, and the classes each is for.",
-                 annotations=_reads("List resources"))
+                 annotations=_reads("List resources"),
+                 meta=_requires("planner:read"))
     async def list_resources(class_id: int | None = Field(default=None,
                                                           description="Only resources for this class (an id from "
                                                                       "list_classes).")) -> dict[str, Any]:
@@ -457,7 +468,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                              "Helium calculates the class needs to reach target_grade, or to reach the lowest grade "
                              "on its scale (grade_band) that brings its term's GPA to target_gpa. With "
                              "gpa_unreachable, grade_band is the top grade, and even it falls short.",
-                 annotations=_reads("Get grades"))
+                 annotations=_reads("Get grades"),
+                 meta=_requires("planner:read"))
     async def get_grades(include_past_terms: bool = Field(default=False,
                                                           description="Include terms that have ended."),
                          target_grade: float | None = Field(default=None,
@@ -487,11 +499,22 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
     return server
 
 
+class ScopeRequiredError(ToolError):
+    """
+    Raised by a tool when the token lacks a scope the user grants by reconnecting. The tool's error then carries an
+    ``insufficient_scope`` challenge, which clients such as ChatGPT answer by offering to reconnect.
+    """
+
+
 class HeliumServer(MCPServer[Any]):
     """
     The MCP server, reporting arguments that don't match a tool's input schema as plain problems (by default they
-    carry pydantic's error codes and links).
+    carry pydantic's error codes and links), and a missing scope as an ``insufficient_scope`` challenge.
     """
+
+    def __init__(self, resource_metadata_url: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.resource_metadata_url = resource_metadata_url
 
     async def list_tools(self) -> list[Tool]:
         tools = await super().list_tools()
@@ -509,6 +532,8 @@ class HeliumServer(MCPServer[Any]):
         try:
             return await super().call_tool(name, arguments, context)
         except ToolError as e:
+            if isinstance(e.__cause__, ScopeRequiredError):
+                return self._insufficient_scope(str(e))
             if isinstance(e, UnexpectedToolError) or not isinstance(e.__cause__, ValidationError):
                 raise
             cause = e.__cause__
@@ -516,6 +541,12 @@ class HeliumServer(MCPServer[Any]):
                         for detail in cause.errors()]
             raise ToolError("The input doesn't match the tool's schema:\n"
                             + "\n".join(f"- {problem}" for problem in problems)) from cause
+
+    def _insufficient_scope(self, message: str) -> CallToolResult:
+        challenge = (f'Bearer resource_metadata="{self.resource_metadata_url}", error="insufficient_scope", '
+                     f'error_description="This connection needs more access", scope="{" ".join(SCOPES)}"')
+        return CallToolResult(content=[TextContent(type="text", text=message)], is_error=True,
+                              _meta={"mcp/www_authenticate": [challenge]})
 
 
 def _inline_definitions(schema: dict[str, Any]) -> dict[str, Any]:
@@ -558,6 +589,10 @@ def _drop_field_titles(schema: Any) -> None:
     elif isinstance(schema, list):
         for value in schema:
             _drop_field_titles(value)
+
+
+def _requires(*scopes: str) -> dict[str, Any]:
+    return {"securitySchemes": [{"type": "oauth2", "scopes": list(scopes)}]}
 
 
 def _reads(title: str) -> ToolAnnotations:

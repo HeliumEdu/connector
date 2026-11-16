@@ -172,6 +172,21 @@ class TestTools(McpTestCase):
             self.assertFalse(tool["annotations"]["openWorldHint"], name)
             self.assertLessEqual(len(name), 64)
 
+    async def test_each_tool_declares_the_scopes_it_needs(self) -> None:
+        # WHEN
+        response = await self.rpc("tools/list")
+
+        # THEN
+        scopes = {tool["name"]: [scheme["scopes"] for scheme in tool["_meta"]["securitySchemes"]
+                                 if scheme["type"] == "oauth2"]
+                  for tool in response.json()["result"]["tools"]}
+        self.assertEqual({"preview_import_term": [["planner:import"]], "import_term": [["planner:import"]],
+                          "preview_import_ics": [["planner:import"]], "import_ics": [["planner:import"]],
+                          "list_assignments": [["planner:read"]], "list_events": [["planner:read"]],
+                          "list_notes": [["planner:notes:read", "planner:read"]],
+                          "list_classes": [["planner:read"]], "list_resources": [["planner:read"]],
+                          "get_grades": [["planner:read"]]}, scopes)
+
     async def test_field_titles_are_left_out_and_model_titles_kept(self) -> None:
         # WHEN
         response = await self.rpc("tools/list")
@@ -859,6 +874,11 @@ class TestReads(McpTestCase):
         self.assertIn("access to notes", result["content"][0]["text"])
         self.assertIn("Read your notes", result["content"][0]["text"])
         self.assertEqual([], self.helium.requested("GET", "/planner/courses/"))
+        [challenge] = result["_meta"]["mcp/www_authenticate"]
+        self.assertIn(f'resource_metadata="{CONNECTOR_URL}/.well-known/oauth-protected-resource/mcp"', challenge)
+        self.assertIn('error="insufficient_scope"', challenge)
+        self.assertIn('error_description="', challenge)
+        self.assertIn('scope="planner:read planner:notes:read planner:import"', challenge)
 
     async def test_notes_for_a_class_event_or_resource(self) -> None:
         # GIVEN
