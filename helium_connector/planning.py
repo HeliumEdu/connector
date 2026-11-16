@@ -26,7 +26,7 @@ _SECTION_NAMES = {"course_groups": "terms", "courses": "classes", "course_schedu
                   "categories": "categories", "homework": "assignments", "events": "events"}
 _SHORT_DAYS = {"sunday": "Sun", "monday": "Mon", "tuesday": "Tue", "wednesday": "Wed", "thursday": "Thu",
                "friday": "Fri", "saturday": "Sat"}
-_ICAL_SHORT_DAYS = {day[:2].upper(): short for day, short in _SHORT_DAYS.items()}
+_ICALENDAR_SHORT_DAYS = {day[:2].upper(): short for day, short in _SHORT_DAYS.items()}
 _FREQUENCIES = {"DAILY": ("daily", "days"), "WEEKLY": ("weekly", "weeks"), "MONTHLY": ("monthly", "months"),
                 "YEARLY": ("yearly", "years")}
 _LOCAL_UNTIL = re.compile(r"^\d{8}$")
@@ -331,7 +331,7 @@ def describe_rule(rule: str) -> str:
     interval = int(parts["INTERVAL"]) if parts.get("INTERVAL", "").isdigit() else 1
     description = frequency[0] if interval == 1 else f"every {interval} {frequency[1]}"
     if parts.get("BYDAY"):
-        description += " on " + ", ".join(_ICAL_SHORT_DAYS.get(day, day) for day in parts["BYDAY"].split(","))
+        description += " on " + ", ".join(_ICALENDAR_SHORT_DAYS.get(day, day) for day in parts["BYDAY"].split(","))
     if parts.get("BYMONTHDAY") == "-1":
         description += " on the last day"
     elif parts.get("BYMONTHDAY"):

@@ -134,7 +134,6 @@ def expand_events(events: list[dict[str, Any]], start: date, end: date, time_zon
                     "start": occurrence.date().isoformat() if event.get("all_day") else occurrence.isoformat(),
                     "end": None if event.get("all_day") else (occurrence + duration).isoformat(),
                     "all_day": bool(event.get("all_day")),
-                    "location": event.get("location") or None,
                     "priority": event.get("priority"),
                     "repeats": bool(event.get("recurrence_rule")),
                 })
