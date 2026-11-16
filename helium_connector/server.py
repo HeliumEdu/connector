@@ -419,8 +419,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                                                      event_id=event_id, resource_id=resource_id, page=page,
                                                      page_size=limit)
             except HeliumPermissionError as e:
-                raise ScopeRequiredError("This Helium connection wasn't given access to notes. To allow it, reconnect Helium "
-                                "and check \"Read your notes\", then try again.") from e
+                raise ScopeRequiredError("This Helium connection wasn't given access to notes. To allow it, reconnect "
+                                         "Helium and check \"Read your notes\", then try again.") from e
             courses = await client.list_courses()
         return {"total": notes.total, "page": page, "has_more": notes.has_more,
                 "notes": shape_notes(notes.items, courses, time_zone, limit)}
