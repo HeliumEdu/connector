@@ -84,6 +84,17 @@ class TestShapeClasses(unittest.TestCase):
                          (bio["start_date"], bio["end_date"], bio["no_class_dates"]))
         self.assertEqual("points-based", bio["grading"])
 
+    def test_a_schedules_own_cancellations_are_in_its_meeting_times(self) -> None:
+        # GIVEN
+        schedules = [{**SCHEDULES[0], "end_date": "2026-12-11", "exceptions": "20261120,20261202"}]
+
+        # WHEN
+        terms = shape_classes(COURSE_GROUPS, COURSES, schedules, CATEGORIES, date(2026, 10, 1), False)
+
+        # THEN
+        self.assertEqual(["Mon/Wed 10:00-10:50; Fri 11:00-11:50, until 2026-12-11, except 2026-11-20, 2026-12-02"],
+                         terms[0]["classes"][0]["meets"])
+
     def test_past_terms(self) -> None:
         # WHEN
         terms = shape_classes(COURSE_GROUPS, COURSES, SCHEDULES, CATEGORIES, date(2026, 10, 1), True)

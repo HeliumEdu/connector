@@ -456,7 +456,7 @@ def _validate_course(course: Course, plan: TermPlan) -> list[str]:
 
     no_class_dates = _no_class_dates(course, plan)
     for schedule in course.schedules:
-        problems += _validate_schedule(name, schedule, start_date, end_date, no_class_dates)
+        problems += _validate_schedule(name, schedule, start_date, end_date, set(plan.course_group.no_class_dates))
 
     titles: set[str] = set()
     for category in course.categories:
@@ -474,7 +474,7 @@ def _validate_schedule(name: str,
                        schedule: Schedule,
                        start_date: date,
                        end_date: date,
-                       no_class_dates: set[date]) -> list[str]:
+                       term_no_class_dates: set[date]) -> list[str]:
     problems: list[str] = []
     item = f"{name}, {_schedule_label(schedule)}"
 
@@ -484,7 +484,7 @@ def _validate_schedule(name: str,
                         f"({start_date} to {end_date}).")
 
     if isinstance(schedule, DayCycleSchedule):
-        problems += _validate_day_cycle(item, schedule, start_date, end_date, no_class_dates)
+        problems += _validate_day_cycle(item, schedule, start_date, end_date, term_no_class_dates)
     return problems
 
 
@@ -492,12 +492,12 @@ def _validate_day_cycle(item: str,
                         schedule: DayCycleSchedule,
                         start_date: date,
                         end_date: date,
-                        no_class_dates: set[date]) -> list[str]:
+                        term_no_class_dates: set[date]) -> list[str]:
     problems: list[str] = []
     if schedule.day_one.weekday() > 4:
         problems.append(f"{item}: cycle Day 1 ({schedule.day_one}) is a {schedule.day_one:%A}; the cycle only "
                         f"counts school days, Monday to Friday.")
-    elif schedule.day_one in no_class_dates:
+    elif schedule.day_one in term_no_class_dates:
         problems.append(f"{item}: cycle Day 1 ({schedule.day_one}) is a no-class date.")
     elif not start_date <= schedule.day_one <= end_date:
         problems.append(f"{item}: cycle Day 1 ({schedule.day_one}) is outside the class's dates ({start_date} to "

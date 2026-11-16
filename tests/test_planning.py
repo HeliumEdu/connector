@@ -371,9 +371,20 @@ class TestValidateSchedules(unittest.TestCase):
             "Class 'ART', 6-day cycle schedule: cycle Day 1 (2026-09-05) is a Saturday; the cycle only counts "
             "school days, Monday to Friday.",
             "Class 'ART', 6-day cycle schedule: a time slot lists the same cycle day more than once.",
-            "Class 'ART', A/B Day schedule: cycle Day 1 (2026-09-01) is a no-class date.",
             "Class 'ART', A/B Day schedule: cycle Day 1 (2026-09-07) is a no-class date.",
         ], problems)
+
+    def test_day_one_on_a_class_no_class_date_counts_as_a_school_day(self):
+        # GIVEN
+        plan = given_a_plan(courses=[Course(title="ART", no_class_dates=[date(2026, 9, 1)], schedules=[
+            DayCycleSchedule(pattern="day_cycle", cycle_length=2, day_one=date(2026, 9, 1), slots=[
+                CycleSlot(cycle_days=[1], start_time=time(9), end_time=time(10))])])])
+
+        # WHEN
+        problems = validate(plan)
+
+        # THEN
+        self.assertEqual([], problems)
 
     def test_day_one_outside_the_class(self):
         # GIVEN
