@@ -84,6 +84,17 @@ class TestShapeClasses(unittest.TestCase):
                          (bio["start_date"], bio["end_date"], bio["no_class_dates"]))
         self.assertEqual("points-based", bio["grading"])
 
+    def test_a_schedules_own_cancellations_are_in_its_meeting_times(self) -> None:
+        # GIVEN
+        schedules = [{**SCHEDULES[0], "end_date": "2026-12-11", "exceptions": "20261120,20261202"}]
+
+        # WHEN
+        terms = shape_classes(COURSE_GROUPS, COURSES, schedules, CATEGORIES, date(2026, 10, 1), False)
+
+        # THEN
+        self.assertEqual(["Mon/Wed 10:00-10:50; Fri 11:00-11:50, until 2026-12-11, except 2026-11-20, 2026-12-02"],
+                         terms[0]["classes"][0]["meets"])
+
     def test_past_terms(self) -> None:
         # WHEN
         terms = shape_classes(COURSE_GROUPS, COURSES, SCHEDULES, CATEGORIES, date(2026, 10, 1), True)
@@ -264,14 +275,14 @@ class TestExpandEvents(unittest.TestCase):
 
         # THEN
         self.assertEqual([{"id": 1, "title": "Advising", "start": "2026-09-02T15:00:00-05:00",
-                           "end": "2026-09-02T15:30:00-05:00", "all_day": False, "location": None,
+                           "end": "2026-09-02T15:30:00-05:00", "all_day": False,
                            "priority": None, "repeats": False}], expanded)
 
     def test_weekly_series_keeps_its_local_time_across_dst(self) -> None:
         # GIVEN
         events = [{"id": 5, "title": "Office Hours", "start": "2026-10-20T20:00:00Z", "end": "2026-10-20T21:00:00Z",
                    "all_day": False, "recurrence_rule": "FREQ=WEEKLY;BYDAY=TU;UNTIL=20261231T000000Z",
-                   "exception_dates": ["2026-10-27T20:00:00Z"], "location": "Hall 2"}]
+                   "exception_dates": ["2026-10-27T20:00:00Z"]}]
 
         # WHEN
         expanded = expand_events(events, date(2026, 10, 19), date(2026, 11, 10), CHICAGO)

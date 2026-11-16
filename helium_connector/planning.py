@@ -26,7 +26,7 @@ _SECTION_NAMES = {"course_groups": "terms", "courses": "classes", "course_schedu
                   "categories": "categories", "homework": "assignments", "events": "events"}
 _SHORT_DAYS = {"sunday": "Sun", "monday": "Mon", "tuesday": "Tue", "wednesday": "Wed", "thursday": "Thu",
                "friday": "Fri", "saturday": "Sat"}
-_ICAL_SHORT_DAYS = {day[:2].upper(): short for day, short in _SHORT_DAYS.items()}
+_ICALENDAR_SHORT_DAYS = {day[:2].upper(): short for day, short in _SHORT_DAYS.items()}
 _FREQUENCIES = {"DAILY": ("daily", "days"), "WEEKLY": ("weekly", "weeks"), "MONTHLY": ("monthly", "months"),
                 "YEARLY": ("yearly", "years")}
 _LOCAL_UNTIL = re.compile(r"^\d{8}$")
@@ -331,7 +331,7 @@ def describe_rule(rule: str) -> str:
     interval = int(parts["INTERVAL"]) if parts.get("INTERVAL", "").isdigit() else 1
     description = frequency[0] if interval == 1 else f"every {interval} {frequency[1]}"
     if parts.get("BYDAY"):
-        description += " on " + ", ".join(_ICAL_SHORT_DAYS.get(day, day) for day in parts["BYDAY"].split(","))
+        description += " on " + ", ".join(_ICALENDAR_SHORT_DAYS.get(day, day) for day in parts["BYDAY"].split(","))
     if parts.get("BYMONTHDAY") == "-1":
         description += " on the last day"
     elif parts.get("BYMONTHDAY"):
@@ -456,7 +456,7 @@ def _validate_course(course: Course, plan: TermPlan) -> list[str]:
 
     no_class_dates = _no_class_dates(course, plan)
     for schedule in course.schedules:
-        problems += _validate_schedule(name, schedule, start_date, end_date, no_class_dates)
+        problems += _validate_schedule(name, schedule, start_date, end_date, set(plan.course_group.no_class_dates))
 
     titles: set[str] = set()
     for category in course.categories:
@@ -474,7 +474,7 @@ def _validate_schedule(name: str,
                        schedule: Schedule,
                        start_date: date,
                        end_date: date,
-                       no_class_dates: set[date]) -> list[str]:
+                       term_no_class_dates: set[date]) -> list[str]:
     problems: list[str] = []
     item = f"{name}, {_schedule_label(schedule)}"
 
@@ -484,7 +484,7 @@ def _validate_schedule(name: str,
                         f"({start_date} to {end_date}).")
 
     if isinstance(schedule, DayCycleSchedule):
-        problems += _validate_day_cycle(item, schedule, start_date, end_date, no_class_dates)
+        problems += _validate_day_cycle(item, schedule, start_date, end_date, term_no_class_dates)
     return problems
 
 
@@ -492,12 +492,12 @@ def _validate_day_cycle(item: str,
                         schedule: DayCycleSchedule,
                         start_date: date,
                         end_date: date,
-                        no_class_dates: set[date]) -> list[str]:
+                        term_no_class_dates: set[date]) -> list[str]:
     problems: list[str] = []
     if schedule.day_one.weekday() > 4:
         problems.append(f"{item}: cycle Day 1 ({schedule.day_one}) is a {schedule.day_one:%A}; the cycle only "
                         f"counts school days, Monday to Friday.")
-    elif schedule.day_one in no_class_dates:
+    elif schedule.day_one in term_no_class_dates:
         problems.append(f"{item}: cycle Day 1 ({schedule.day_one}) is a no-class date.")
     elif not start_date <= schedule.day_one <= end_date:
         problems.append(f"{item}: cycle Day 1 ({schedule.day_one}) is outside the class's dates ({start_date} to "

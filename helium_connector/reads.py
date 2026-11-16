@@ -134,7 +134,6 @@ def expand_events(events: list[dict[str, Any]], start: date, end: date, time_zon
                     "start": occurrence.date().isoformat() if event.get("all_day") else occurrence.isoformat(),
                     "end": None if event.get("all_day") else (occurrence + duration).isoformat(),
                     "all_day": bool(event.get("all_day")),
-                    "location": event.get("location") or None,
                     "priority": event.get("priority"),
                     "repeats": bool(event.get("recurrence_rule")),
                 })
@@ -340,11 +339,14 @@ def _describe_schedule(schedule: dict[str, Any]) -> str:
 
     start_date, end_date = schedule.get("start_date"), schedule.get("end_date")
     if start_date and end_date:
-        return f"{description}, {start_date} to {end_date}"
+        description = f"{description}, {start_date} to {end_date}"
     elif start_date:
-        return f"{description}, from {start_date}"
+        description = f"{description}, from {start_date}"
     elif end_date:
-        return f"{description}, until {end_date}"
+        description = f"{description}, until {end_date}"
+
+    if cancelled := _no_class_dates(schedule.get("exceptions")):
+        description = f"{description}, except {', '.join(cancelled)}"
     return description
 
 
