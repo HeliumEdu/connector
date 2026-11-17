@@ -622,7 +622,8 @@ class TestPrompts(McpTestCase):
         self.assertIn("A term has no GPA without a grade scale or a graded class with credits.",
                       tools["get_grades"]["description"])
         self.assertIn("cumulative_gpa, across the terms on the same grade scale as the most recent term with one, "
-                      "other than the example schedule.",
+                      "other than the example schedule, plus any prior credits and GPA the student set in Helium for "
+                      "work before those terms.",
                       tools["get_grades"]["description"])
 
     async def test_get_grades_explains_that_ungraded_work_isnt_counted(self) -> None:
