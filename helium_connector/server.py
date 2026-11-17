@@ -44,7 +44,8 @@ DEFAULT_PAGE_SIZE: Final = 25
 MAX_PAGE_SIZE: Final = 100
 DUPLICATES_DESCRIPTION: Final = ("Import even if the new term (same title and dates) or a class (same title, in an "
                                  "existing term) is already in Helium.")
-ICS_DESCRIPTION: Final = "The calendar, as the .ics file's text, unchanged."
+ICS_DESCRIPTION: Final = ("The calendar as .ics text: the whole file, or, from a file that covers several classes, "
+                          "a calendar of one class's entries with the file's time zones.")
 ICS_CLASS_DESCRIPTION: Final = ("The class whose assignments the entries become (an id from list_classes, or from "
                                 "what import_term returned). Unset imports them as events.")
 _ICS_SECTION_NAMES: Final = {"homework": "assignments", "events": "events"}
@@ -56,9 +57,11 @@ INSTRUCTIONS: Final = (
     "schedule, or one exported from another planner) and what they tell you. Read the syllabi into a plan for "
     "import_term. Don't copy a calendar file's entries into the plan: once its class is in Helium, import the file's "
     "text with import_ics, which adds its entries as that class's assignments (or as events, with no class). Ask the "
-    "student which class a calendar is for when it isn't clear. A calendar has only titles, dates, and times; "
-    "grading, meeting times, and credits still come from the syllabus or the student. A Helium export file (a "
-    "backup, or a schedule shared by another student) imports in the Helium app under Settings, Import / Export.\n\n"
+    "student which class a calendar is for when it isn't clear. When one calendar covers several classes, split it "
+    "by class and import each part, as its own calendar, into its class (or as events, for entries with no class). "
+    "A calendar has only titles, dates, and times; grading, meeting times, and credits still come from the syllabus "
+    "or the student. A Helium export file (a backup, or a schedule shared by another student) imports in the Helium "
+    "app under Settings, Import / Export.\n\n"
     "A term holds every class the student takes in it. Imports only add to Helium, and nothing they add can be "
     "changed or deleted through these tools, so gather everything before importing: the syllabus for each class, any "
     "calendar files, and the student's answers. Then ask whether they have more syllabi, calendars, or details for "
@@ -105,14 +108,15 @@ fill gaps from what's typical. Ask especially about:
    - the time of day for work due in class or due "that week"
    - how each class is graded: weighted categories and their weights, or points
    - my school's grade scale for GPA (like 4.0 with +/-), and any class whose syllabus grades differently
-   - which class each calendar file is for
+   - which class each calendar file is for, or each entry when one file covers several classes
    If something is still unknown after asking, leave it out rather than guessing.
 3. Check the plan with preview_import_term. Fix every problem it lists, and ask me about what it lists under \
 to_confirm and warnings.
 4. Imports can't be undone here, so before importing, show me the summary and ask whether I have anything else to add \
 for this term. Import only after I say I'm ready.
 5. After the classes are in Helium, import each calendar file into its class with import_ics (check it first with \
-preview_import_ics), using the class ids the import returned."""
+preview_import_ics), using the class ids the import returned. Split a file that covers several classes into one \
+part per class, and import each part into its class."""
 STUDY_PROMPT: Final = """Help me decide what to work on with the time I have.
 
 1. Ask how much time I have, if I haven't said.
