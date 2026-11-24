@@ -28,9 +28,9 @@
 ![GitHub License](https://img.shields.io/github/license/heliumedu/connector)
 
 The Helium `connector` is a remote [MCP](https://modelcontextprotocol.io) server that connects AI assistants to a
-student's Helium account, to import a term from syllabi and read the planner. It makes no model calls, and calls
-Helium's [API](https://api.heliumedu.com/docs/) with the student's own OAuth token. The repository also holds
-`heliumedu`, a typed, async Python client for that API.
+student's Helium account, to import a term from syllabi and ask about what's due, notes, classes, resources, and
+grades. It makes no model calls, and calls Helium's [API](https://api.heliumedu.com/docs/) with the student's own
+OAuth token. The repository also holds `pyheliumedu`, a typed, async Python client for that API.
 
 ## Prerequisites
 
@@ -89,7 +89,7 @@ For assistants that offer prompts, these are listed alongside the tools:
 
 #### Permissions
 
-Signing in grants the `planner:read` and `planner:import` scopes, plus `planner:notes:read` if the user checks it,
+Signing in grants the `planner:read` and `planner:import` scopes, plus `planner:notes:read` if you check it,
 shown on Helium's consent screen and described in its [API documentation](https://api.heliumedu.com/docs/).
 `list_notes` works only with `planner:notes:read`. `import_term` and `import_ics` are the only writes, and they
 only add to Helium: no tool sends messages, makes payments, or changes or deletes anything.

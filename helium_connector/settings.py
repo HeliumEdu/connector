@@ -1,34 +1,56 @@
+import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
-from heliumedu.client import DEFAULT_API_URL
+from helium_connector import __version__
+from pyheliumedu.client import DEFAULT_API_URL
 
 DEFAULT_APP_URL: Final = "https://app.heliumedu.com"
 DEFAULT_CONNECTOR_URL: Final = "https://mcp.heliumedu.com"
+WEBSITE_URL: Final = "https://www.heliumedu.com"
+DOCS_URL: Final = f"{WEBSITE_URL}/support/getting-started/where-to-start-with-helium/#use-ai-as-a-scheduling-assistant"
+ICON_URL: Final = f"{WEBSITE_URL}/icon-512.png"
 MCP_PATH: Final = "/mcp"
-SCOPES: Final = ("planner:read", "planner:notes:read", "planner:import")
+WELL_KNOWN_DIR: Final = Path(__file__).resolve().parent / "well_known"
+AGENT: Final = f"helium-connector/{__version__}"
+
+USER_CACHE_SECONDS: Final = 60
+USER_CACHE_SIZE: Final = 1000
+
+DEFAULT_WINDOW_DAYS: Final = 7
+MAX_WINDOW_DAYS: Final = 366
+DEFAULT_PAGE_SIZE: Final = 25
+MAX_PAGE_SIZE: Final = 100
+DEFAULT_NOTES_PAGE_SIZE: Final = 5
+MAX_NOTES_PAGE_SIZE: Final = 10
+MAX_NOTE_CHARS: Final = 4000
+
+MAX_ASSIGNMENTS: Final = 1000
+MAX_EVENTS: Final = 500
+
+
+def configure_logging() -> None:
+    """
+    Log at ``INFO``, but ``httpx`` only at ``WARNING``, since its request URLs carry students' search text.
+    """
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @dataclass(frozen=True)
 class Settings:
     """
-    The connector's configuration, read from the environment.
+    The connector's configuration, read from the environment. The MCP endpoint is ``connector_url`` plus ``/mcp``.
+    When ``origin_secret`` is set, requests that don't carry it as ``X-Origin-Secret`` (which CloudFront adds) are
+    refused, so the public function URL can't be used around CloudFront.
     """
 
-    #: Where Helium's API is.
     api_url: str = DEFAULT_API_URL
-    #: Where the Helium web app is.
     app_url: str = DEFAULT_APP_URL
-    #: Where the connector is served (its MCP endpoint is this plus ``/mcp``).
     connector_url: str = DEFAULT_CONNECTOR_URL
-    #: The OAuth authorization server that issues the connector's tokens (Helium's API unless set).
-    issuer_url: str = DEFAULT_API_URL
-    #: The ``Host`` values the MCP endpoint accepts; empty turns off DNS rebinding protection, which is for servers
-    #: on a local address, not one behind CloudFront.
-    allowed_hosts: list[str] = field(default_factory=list)
-    #: The secret CloudFront sends as ``X-Origin-Secret``; when set, requests without it are refused, so the public
-    #: function URL can't be used around CloudFront.
     origin_secret: str | None = None
 
     @property
@@ -45,11 +67,7 @@ class Settings:
 
         :return: The configuration.
         """
-        api_url = os.environ.get("HELIUM_API_URL", DEFAULT_API_URL).rstrip("/")
-        hosts = os.environ.get("HELIUM_ALLOWED_HOSTS", "")
-        return cls(api_url=api_url,
+        return cls(api_url=os.environ.get("HELIUM_API_URL", DEFAULT_API_URL).rstrip("/"),
                    app_url=os.environ.get("HELIUM_APP_URL", DEFAULT_APP_URL).rstrip("/"),
                    connector_url=os.environ.get("HELIUM_CONNECTOR_URL", DEFAULT_CONNECTOR_URL).rstrip("/"),
-                   issuer_url=os.environ.get("HELIUM_ISSUER_URL", api_url).rstrip("/"),
-                   allowed_hosts=[host.strip() for host in hosts.split(",") if host.strip()],
                    origin_secret=os.environ.get("HELIUM_ORIGIN_SECRET") or None)

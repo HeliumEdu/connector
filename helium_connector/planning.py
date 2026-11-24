@@ -1,7 +1,7 @@
 import re
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from itertools import islice
@@ -14,12 +14,11 @@ from dateutil.rrule import rrulestr
 from helium_connector.models import WEEKDAYS, Course, CourseGroup, CycleSlot, DayCycleSchedule, Event, Homework, \
     Meeting, Schedule, TermPlan, Weekday, WeekRotationSchedule
 from helium_connector.platform_enums import GRADE_SCALE_PRESETS, RECURRENCE_HORIZON_YEARS, UNGRADED
-from helium_connector.reads import describe_numbered_days, grade_scale_name, occurs_within_horizon
+from helium_connector.serializers import describe_cycle, describe_cycle_days, describe_week_rotation, \
+    grade_scale_name, occurs_within_horizon, parse_no_class_dates
+from helium_connector.settings import MAX_ASSIGNMENTS, MAX_EVENTS
 
-MAX_ASSIGNMENTS: Final = 1000
-MAX_EVENTS: Final = 500
-
-_MAX_EXPANDED_OCCURRENCES = max(MAX_ASSIGNMENTS, MAX_EVENTS) + 1
+_MAX_EXPANDED_OCCURRENCES: Final = max(MAX_ASSIGNMENTS, MAX_EVENTS) + 1
 _ROW_ERROR = re.compile(r"^(?P<section>\w+) id (?P<row_id>\d+), (?P<field>\w+): (?P<message>.+)$", re.DOTALL)
 _PLAN_FIELD_NAMES = {"grade_scale_template": "grade_scale", "exceptions": "no_class_dates"}
 _SECTION_NAMES = {"course_groups": "terms", "courses": "classes", "course_schedules": "schedules",
@@ -35,18 +34,18 @@ _LOCAL_UNTIL = re.compile(r"^\d{8}$")
 @dataclass(frozen=True)
 class ImportPayload:
     """
-    A plan converted to Helium's import format.
+    A plan converted to Helium's import format: ``data`` is the import file's contents, shaped like
+    ``GET /importexport/export/``, and ``labels`` says what each row is, for the student, keyed by ``(section, id)``,
+    so Helium's row errors can name it.
     """
 
-    #: The import file's contents, shaped like ``GET /importexport/export/``.
     data: dict[str, Any]
-    #: What each row is, for the student, keyed by ``(section, id)``, so Helium's row errors can name it.
-    labels: dict[tuple[str, int], str] = field(default_factory=dict)
+    labels: dict[tuple[str, int], str]
 
 
 def validate(plan: TermPlan) -> list[str]:
     """
-    Check a plan against what Helium accepts, before anything is sent.
+    Check what converting the plan needs, and plan facts Helium never sees, before anything is sent.
 
     :param plan: The plan.
     :return: Every problem found, each naming what it's about and what to fix (empty when there are none).
@@ -117,7 +116,7 @@ def to_confirm(plan: TermPlan) -> list[str]:
         if course.credits is None:
             gaps.append(f"{name}: credits aren't set, so it imports with 0 credits and isn't counted in GPA.")
         if not course.schedules and not course.is_online:
-            gaps.append(f"{name}: no meeting times, so it won't show on the calendar.")
+            gaps.append(f"{name}: no meeting times, so no class meetings show on the calendar.")
         if course.schedules and not course.is_online and not course.room:
             gaps.append(f"{name}: no room, and it isn't marked online.")
         if not course.categories:
@@ -137,22 +136,20 @@ def existing_term(course_group: dict[str, Any]) -> CourseGroup:
     :param course_group: The class group, as ``GET /planner/coursegroups/`` returns it.
     :return: The term.
     """
-    no_class_dates = [datetime.strptime(day, "%Y%m%d").date()
-                      for day in (course_group.get("exceptions") or "").split(",") if re.fullmatch(r"\d{8}", day)]
     return CourseGroup.model_construct(title=course_group["title"],
                                        start_date=date.fromisoformat(course_group["start_date"]),
                                        end_date=date.fromisoformat(course_group["end_date"]),
-                                       no_class_dates=no_class_dates,
+                                       no_class_dates=parse_no_class_dates(course_group["exceptions"]),
                                        grade_scale=grade_scale_name(course_group.get("grade_scale_template")))
 
 
-def summarize(plan: TermPlan, term_grade_scale: str | None = None) -> dict[str, Any]:
+def summarize(plan: TermPlan, term_grade_scale: str | None) -> dict[str, Any]:
     """
     Describe what a plan creates, for the student to confirm.
 
     :param plan: The plan.
     :param term_grade_scale: An existing term's grade scale as ``list_classes`` names it (``custom`` included), in
-        place of the plan term's preset.
+        place of the plan term's preset; ``None`` for a new term.
     :return: The term, each class, and the totals.
     """
     courses = []
@@ -279,14 +276,14 @@ def build_import(plan: TermPlan, time_zone: ZoneInfo) -> ImportPayload:
 def describe_import(plan: TermPlan,
                     counts: dict[str, int],
                     ids: dict[str, dict[str, int]],
-                    term_id: int | None = None) -> dict[str, Any]:
+                    term_id: int | None) -> dict[str, Any]:
     """
     What an import created, in the plan's words, with the ids Helium assigned.
 
     :param plan: The imported plan.
     :param counts: Helium's counts, by import section.
     :param ids: The ids Helium assigned, by import section, then by the id in the import file.
-    :param term_id: The term the classes went into, when it was already in Helium.
+    :param term_id: The term the classes went into, when it was already in Helium; ``None`` for a new term.
     :return: The term's id, each class's id, and how many of each thing were created.
     """
     class_ids = ids.get("courses", {})
@@ -294,8 +291,16 @@ def describe_import(plan: TermPlan,
         "term_id": term_id or ids.get("course_groups", {}).get("1"),
         "classes": [{"title": course.title, "id": class_ids.get(str(course_id))}
                     for course_id, course in enumerate(plan.courses, start=1)],
-        "created": {name: counts[section] for section, name in _SECTION_NAMES.items() if counts.get(section)},
+        "created": describe_created(counts),
     }
+
+
+def describe_created(counts: dict[str, int]) -> dict[str, int]:
+    """
+    :param counts: Helium's import counts, by import section.
+    :return: How many of each thing an import created, in the plan's words, leaving out what it created none of.
+    """
+    return {name: counts[section] for section, name in _SECTION_NAMES.items() if counts.get(section)}
 
 
 def occurrences(item: Event | Homework, skip: Iterable[date], last_day: date) -> list[date]:
@@ -342,6 +347,26 @@ def describe_rule(rule: str) -> str:
         until = parts["UNTIL"]
         description += f" until {until[:4]}-{until[4:6]}-{until[6:]}"
     return description
+
+
+def explain_platform_errors(errors: Any, labels: dict[tuple[str, int], str]) -> list[str]:
+    """
+    Turn Helium's import errors into messages that name what they're about.
+
+    :param errors: Helium's error body.
+    :param labels: The import's row labels.
+    :return: The messages.
+    """
+    messages: list[str] = []
+    if isinstance(errors, dict):
+        for section, section_errors in errors.items():
+            for error in (section_errors if isinstance(section_errors, list) else [section_errors]):
+                messages.append(_explain_row_error(str(section), str(error), labels))
+    elif isinstance(errors, list):
+        messages += [str(error) for error in errors]
+    elif errors:
+        messages.append(str(errors))
+    return messages or ["Helium rejected the import without saying why."]
 
 
 class _UnreadableRule(Exception):
@@ -410,39 +435,15 @@ def _item_timing(item: Event | Homework, skip: set[date], last_day: date, time_z
         return row
 
     row["recurrence_rule"] = _platform_rule(item.recurrence_rule, last_day, time_zone)
-    exceptions = [_utc(datetime.combine(day, start or time(0), time_zone))
+    exceptions = [f"{datetime.combine(day, start or time(0), time_zone).astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                   for day in _rule_dates(item, last_day) if day in skip]
     if exceptions:
         row["exception_dates"] = exceptions
     return row
 
 
-def _utc(moment: datetime) -> str:
-    return f"{moment.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
-
-
 def _no_class_dates(course: Course, plan: TermPlan) -> set[date]:
     return set(course.no_class_dates) | set(plan.course_group.no_class_dates)
-
-
-def explain_platform_errors(errors: Any, labels: dict[tuple[str, int], str]) -> list[str]:
-    """
-    Turn Helium's import errors into messages that name what they're about.
-
-    :param errors: Helium's error body.
-    :param labels: The import's row labels.
-    :return: The messages.
-    """
-    messages: list[str] = []
-    if isinstance(errors, dict):
-        for section, section_errors in errors.items():
-            for error in (section_errors if isinstance(section_errors, list) else [section_errors]):
-                messages.append(_explain_row_error(str(section), str(error), labels))
-    elif isinstance(errors, list):
-        messages += [str(error) for error in errors]
-    elif errors:
-        messages.append(str(errors))
-    return messages or ["Helium rejected the import without saying why."]
 
 
 def _validate_course(course: Course, plan: TermPlan) -> list[str]:
@@ -526,10 +527,11 @@ def _validate_homework(name: str,
         problems.append(f"{item}: an end time needs a due time.")
     if homework.recurrence_rule:
         repeat_problems = _validate_repeat(item, homework, no_class_dates, end_date)
-        last = occurrences(homework, no_class_dates, end_date)[-1]
-        if not repeat_problems and last > end_date:
-            repeat_problems.append(f"{item}: its recurrence_rule `{homework.recurrence_rule}` has occurrences through "
-                                   f"{last}, outside the class's dates ({start_date} to {end_date}).")
+        if not repeat_problems:
+            last = occurrences(homework, no_class_dates, end_date)[-1]
+            if last > end_date:
+                repeat_problems.append(f"{item}: its recurrence_rule `{homework.recurrence_rule}` has occurrences "
+                                       f"through {last}, outside the class's dates ({start_date} to {end_date}).")
         problems += repeat_problems
     return problems
 
@@ -567,10 +569,6 @@ def _exceptions(dates: list[date]) -> str:
 
 
 def _pack_meetings(meetings: list[Meeting]) -> list[dict[Weekday, Meeting]]:
-    """
-    Group meetings into schedules, each holding at most one time per weekday (a class meeting twice on a day needs a
-    second schedule).
-    """
     schedules: list[dict[Weekday, Meeting]] = []
     for meeting in meetings:
         for day in dict.fromkeys(meeting.days):
@@ -583,10 +581,6 @@ def _pack_meetings(meetings: list[Meeting]) -> list[dict[Weekday, Meeting]]:
 
 
 def _schedule_rows(schedule: Schedule) -> list[dict[str, Any]]:
-    """
-    Convert a schedule to Helium's schedule rows: more than one when a class meets twice on the same weekday (or
-    cycle day), since a row holds one time per day.
-    """
     window = {key: getattr(schedule, key).isoformat() for key in ("start_date", "end_date") if getattr(schedule, key)}
     if isinstance(schedule, DayCycleSchedule):
         return [{**_weekly_fields({}), "cycle_length": schedule.cycle_length,
@@ -650,24 +644,22 @@ def _schedule_label(schedule: Schedule) -> str:
 
 def _describe_schedule(schedule: Schedule) -> str:
     if isinstance(schedule, DayCycleSchedule):
-        cycle = (f"A/B Day (A Day on {schedule.day_one})" if schedule.cycle_length == 2
-                 else f"{schedule.cycle_length}-day cycle (Day 1 on {schedule.day_one})")
-        slots = "; ".join(f"{_describe_cycle_days(schedule, slot.cycle_days)} "
+        slots = "; ".join(f"{describe_cycle_days(schedule.cycle_length, slot.cycle_days)} "
                           f"{slot.start_time:%H:%M}-{slot.end_time:%H:%M}" for slot in schedule.slots)
-        description = f"{cycle}: {slots}"
+        description = f"{describe_cycle(schedule.cycle_length, schedule.day_one)}: {slots}"
     else:
         meetings = "; ".join(f"{'/'.join(_SHORT_DAYS[day] for day in meeting.days)} "
                              f"{meeting.start_time:%H:%M}-{meeting.end_time:%H:%M}" for meeting in schedule.meetings)
         if isinstance(schedule, WeekRotationSchedule):
-            description = f"Week {schedule.week} (Week A includes {schedule.week_a_starts_on}): {meetings}"
+            description = f"{describe_week_rotation(schedule.week, schedule.week_a_starts_on)}: {meetings}"
         else:
             description = meetings
 
     if schedule.start_date and schedule.end_date:
         return f"{description}, {schedule.start_date} to {schedule.end_date}"
-    elif schedule.start_date:
+    if schedule.start_date:
         return f"{description}, from {schedule.start_date}"
-    elif schedule.end_date:
+    if schedule.end_date:
         return f"{description}, until {schedule.end_date}"
     return description
 
@@ -680,12 +672,6 @@ def _repeated_classes(plan: TermPlan) -> list[str]:
         if count > 1:
             notes.append(f"Class '{course.title}' is listed {count} times; each becomes its own class in Helium.")
     return notes
-
-
-def _describe_cycle_days(schedule: DayCycleSchedule, cycle_days: list[int]) -> str:
-    if schedule.cycle_length == 2:
-        return "A and B Days" if len(set(cycle_days)) == 2 else ("A Day" if cycle_days[0] == 1 else "B Day")
-    return describe_numbered_days(cycle_days)
 
 
 def _explain_row_error(section: str, error: str, labels: dict[tuple[str, int], str]) -> str:

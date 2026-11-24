@@ -6,8 +6,6 @@ from zoneinfo import ZoneInfo
 from helium_connector.models import Category, Course, CourseGroup, CycleSlot, DayCycleSchedule, Event, Homework, \
     Meeting, WeeklySchedule, WeekRotationSchedule
 from helium_connector.planning import (
-    MAX_ASSIGNMENTS,
-    MAX_EVENTS,
     build_import,
     describe_rule,
     existing_term,
@@ -18,6 +16,7 @@ from helium_connector.planning import (
     validate,
     warnings,
 )
+from helium_connector.settings import MAX_ASSIGNMENTS, MAX_EVENTS
 from helium_connector.platform_enums import RECURRENCE_HORIZON_YEARS
 from tests.testcase import given_a_plan
 
@@ -440,7 +439,7 @@ class TestDescribeSchedules(unittest.TestCase):
                              slots=[CycleSlot(cycle_days=[1, 4], start_time=time(9), end_time=time(10))])])])
 
         # WHEN
-        meets = summarize(plan)["classes"][0]["meets"]
+        meets = summarize(plan, None)["classes"][0]["meets"]
 
         # THEN
         self.assertEqual(["Week B (Week A includes 2026-09-02): Tue 13:00-14:00",
@@ -661,7 +660,7 @@ class TestWarningsAndSummary(unittest.TestCase):
         gaps = to_confirm(plan)
 
         # THEN
-        self.assertEqual(["Class 'CHEM 142': no meeting times, so it won't show on the calendar.",
+        self.assertEqual(["Class 'CHEM 142': no meeting times, so no class meetings show on the calendar.",
                           "Class 'CHEM 142': no grading categories, so its assignments go in Uncategorized.",
                           "Class 'CHEM 142': no assignments.",
                           "Class 'MATH 124': no room, and it isn't marked online.",
@@ -689,9 +688,9 @@ class TestWarningsAndSummary(unittest.TestCase):
     def test_existing_term_carries_its_grade_scale(self) -> None:
         # WHEN
         preset = existing_term({"id": 4, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
-                                "grade_scale_template": 2})
+                                "exceptions": "", "grade_scale_template": 2})
         custom = existing_term({"id": 5, "title": "Abroad", "start_date": "2026-08-31", "end_date": "2026-12-18",
-                                "grade_scale_template": None})
+                                "exceptions": "", "grade_scale_template": None})
 
         # THEN
         self.assertEqual("4.0 with +/-", preset.grade_scale)
@@ -735,7 +734,7 @@ class TestWarningsAndSummary(unittest.TestCase):
         plan = given_a_plan()
 
         # WHEN
-        summary = summarize(plan)
+        summary = summarize(plan, None)
 
         # THEN
         self.assertEqual({"classes": 2, "categories": 2, "assignments": 3, "events": 2}, summary["totals"])
@@ -762,7 +761,7 @@ class TestWarningsAndSummary(unittest.TestCase):
             Homework(title="Final", due_date=date(2026, 12, 14))])])
 
         # WHEN
-        summary = summarize(plan)
+        summary = summarize(plan, None)
 
         # THEN
         mat = summary["classes"][0]
@@ -778,7 +777,7 @@ class TestWarningsAndSummary(unittest.TestCase):
                                           recurrence_rule="FREQ=WEEKLY;BYDAY=FR")])
 
         # WHEN
-        summary = summarize(plan)
+        summary = summarize(plan, None)
 
         # THEN
         self.assertEqual([{"title": "Club", "time": "18:00", "first": "2026-12-04", "last": "2026-12-18",
@@ -803,7 +802,7 @@ class TestWarningsAndSummary(unittest.TestCase):
                             events=[Event(title="Add/drop deadline", start_date=date(2026, 9, 11))])
 
         # WHEN
-        summary = summarize(plan)
+        summary = summarize(plan, None)
 
         # THEN
         self.assertEqual("points-based", summary["classes"][0]["grading"])

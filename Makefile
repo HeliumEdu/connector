@@ -15,7 +15,7 @@ venv:
 install: venv
 	@( \
 		source $(PROJECT_VENV)/bin/activate; \
-		python -m pip install ".[dev]"; \
+		python -m pip install ".[dev]" --constraint requirements.txt; \
 	)
 
 nopyc:
@@ -34,7 +34,7 @@ test: install
 check: install
 	@( \
 		source $(PROJECT_VENV)/bin/activate; \
-		mypy heliumedu helium_connector && flake8; \
+		mypy pyheliumedu helium_connector && flake8; \
 	)
 
 run: install
@@ -46,6 +46,7 @@ run: install
 package:
 	rm -rf build/lib build/lambda build/connector.zip
 	$(PYTHON_BIN) -m pip install . \
+		--constraint requirements.txt \
 		--target build/lambda \
 		--platform manylinux2014_$(LAMBDA_ARCH) \
 		--implementation cp \

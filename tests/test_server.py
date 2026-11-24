@@ -14,13 +14,12 @@ from starlette.applications import Starlette
 from helium_connector import app as app_module
 from helium_connector.app import create_app
 from helium_connector.models import Course, Homework
-from helium_connector.server import BEFORE_IMPORT, DOCS_URL
-from helium_connector.settings import Settings
+from helium_connector.server import BEFORE_IMPORT
+from helium_connector.settings import DOCS_URL, Settings
 from tests.testcase import IMPORT_COUNTS, TOKEN, AsyncTestCase, given_a_plan, uploaded_import
 
 CONNECTOR_URL = "https://mcp.example.test"
 PROTOCOL_VERSION = "2025-11-25"
-#: The revision whose `subscriptions/listen` replaced the GET stream.
 SUBSCRIPTIONS_PROTOCOL_VERSION = "2026-07-28"
 
 
@@ -253,7 +252,7 @@ class TestPreview(McpTestCase):
         # THEN
         self.assertFalse(result["structuredContent"]["ready"])
         self.assertEqual(1, len(result["structuredContent"]["problems"]))
-        self.assertIn("Class 'ART': no meeting times, so it won't show on the calendar.",
+        self.assertIn("Class 'ART': no meeting times, so no class meetings show on the calendar.",
                       result["structuredContent"]["to_confirm"])
         self.assertEqual([], self.helium.requested("POST", "/importexport/import/"))
 
@@ -675,7 +674,7 @@ class TestReads(McpTestCase):
         self.assertEqual(6, (date.fromisoformat(content["end_date"]) - date.fromisoformat(content["start_date"])).days)
         params = self.helium.requested("GET", "/planner/homework/")[0].url.params
         self.assertEqual("false", params["completed"])
-        self.assertEqual(9, (date.fromisoformat(params["to"]) - date.fromisoformat(params["from"])).days)
+        self.assertEqual(7, (date.fromisoformat(params["to"]) - date.fromisoformat(params["from"])).days)
 
     async def test_overdue_defaults_to_the_past_year(self) -> None:
         # GIVEN
@@ -792,8 +791,7 @@ class TestReads(McpTestCase):
         # GIVEN
         self.helium.answer("GET", "/planner/grades/needed/", 200, {
             "state": "achievable", "needed_grade": 76.25, "weighted": True, "category": {"id": 3, "title": "Exams"},
-            "assignment": {"id": 9, "title": "Final", "points_possible": 100.0, "needed_points": 76.25},
-            "total_weight_accounted_for": None})
+            "assignment": {"id": 9, "title": "Final", "points_possible": 100.0, "needed_points": 76.25}})
 
         # WHEN
         result = await self.call("get_grades", target_grade=85, class_id=10, target_id=3)
@@ -803,7 +801,7 @@ class TestReads(McpTestCase):
         self.assertEqual({"class_id": 10, "target_grade": 85, "outcome": "achievable", "needed_grade": 76.3,
                           "category": "Exams",
                           "assignment": {"title": "Final", "points_possible": 100.0, "needed_points": 76.3},
-                          "total_weight": None, "grade_band": None}, content)
+                          "grade_band": None}, content)
         params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
         self.assertEqual({"course": "10", "target": "3", "desired_grade": "85.0"}, dict(params))
         self.assertEqual([], self.helium.requested("GET", "/planner/grades/"))
@@ -825,7 +823,7 @@ class TestReads(McpTestCase):
         self.helium.answer("GET", "/planner/grades/needed/", 200, {
             "state": "achievable", "needed_grade": 90.0, "weighted": False, "category": None,
             "assignment": {"id": 9, "title": "Project", "points_possible": 100.0, "needed_points": 90.0},
-            "total_weight_accounted_for": None, "grade_band": {"min_grade": 90.0, "grade_point": 3.7, "label": "A-"}})
+            "grade_band": {"min_grade": 90.0, "grade_point": 3.7, "label": "A-"}})
 
         # WHEN
         result = await self.call("get_grades", target_gpa=3.35, class_id=10, target_id=9)
@@ -835,18 +833,24 @@ class TestReads(McpTestCase):
         self.assertEqual({"class_id": 10, "target_gpa": 3.35, "outcome": "achievable", "needed_grade": 90.0,
                           "category": None,
                           "assignment": {"title": "Project", "points_possible": 100.0, "needed_points": 90.0},
-                          "total_weight": None, "grade_band": {"label": "A-", "min_grade": 90.0, "grade_point": 3.7}},
+                          "grade_band": {"label": "A-", "min_grade": 90.0, "grade_point": 3.7}},
                          content)
         params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
         self.assertEqual({"course": "10", "target": "9", "desired_gpa": "3.35"}, dict(params))
 
-    async def test_needed_grade_takes_a_grade_or_a_gpa_not_both(self) -> None:
+    async def test_needed_grade_relays_helium_refusing_both_targets(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/needed/", 400,
+                           ["Only one of 'desired_grade' or 'desired_gpa' may be given."])
+
         # WHEN
         result = await self.call("get_grades", target_grade=85, target_gpa=3.5, class_id=10, target_id=3)
 
         # THEN
-        self.assertEqual({"problems": ["Give target_grade or target_gpa, not both."]}, result["structuredContent"])
-        self.assertEqual([], self.helium.requested("GET", "/planner/grades/needed/"))
+        self.assertEqual({"problems": ["Only one of 'desired_grade' or 'desired_gpa' may be given."]},
+                         result["structuredContent"])
+        params = self.helium.requested("GET", "/planner/grades/needed/")[0].url.params
+        self.assertEqual(("85.0", "3.5"), (params["desired_grade"], params["desired_gpa"]))
 
     async def test_needed_grade_for_a_gpa_needs_a_class_and_target(self) -> None:
         # WHEN
