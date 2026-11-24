@@ -815,22 +815,24 @@ class TestExplainPlatformErrors(unittest.TestCase):
         # GIVEN
         payload = build_import(given_a_plan(), ZoneInfo("America/Chicago"))
         errors = {"homework": ["homework id 2, current_grade: Ensure this value is valid."],
-                  "courses": "Unresolved `course_group` reference `7` in courses.",
-                  "details": "Invalid JSON in file."}
+                  "row_errors": [{"section": "homework", "id": 2, "field": "current_grade",
+                                  "message": "Ensure this value is valid."}]}
 
         # WHEN
         messages = explain_platform_errors(errors, payload.labels)
 
         # THEN
-        self.assertEqual(["Assignment 'Final Exam' (BIO 151): current grade: Ensure this value is valid.",
-                          "courses: Unresolved `course_group` reference `7` in courses.",
-                          "details: Invalid JSON in file."], messages)
+        self.assertEqual(["Assignment 'Final Exam' (BIO 151): current grade: Ensure this value is valid."], messages)
 
     def test_names_plan_fields_in_helium_errors(self) -> None:
         # GIVEN
         payload = build_import(given_a_plan(), ZoneInfo("America/Chicago"))
         errors = {"courses": ["courses id 1, grade_scale_template: Doesn't fit the group's grade scale.",
-                              "courses id 2, exceptions: 20270104 is outside the class date range."]}
+                              "courses id 2, exceptions: 20270104 is outside the class date range."],
+                  "row_errors": [{"section": "courses", "id": 1, "field": "grade_scale_template",
+                                  "message": "Doesn't fit the group's grade scale."},
+                                 {"section": "courses", "id": 2, "field": "exceptions",
+                                  "message": "20270104 is outside the class date range."}]}
 
         # WHEN
         messages = explain_platform_errors(errors, payload.labels)
@@ -838,6 +840,42 @@ class TestExplainPlatformErrors(unittest.TestCase):
         # THEN
         self.assertEqual(["Class 'BIO 151': grade scale: Doesn't fit the group's grade scale.",
                           "Class 'ENG 101': no class dates: 20270104 is outside the class date range."], messages)
+
+    def test_row_error_about_no_one_field_names_only_the_item(self) -> None:
+        # GIVEN
+        payload = build_import(given_a_plan(), ZoneInfo("America/Chicago"))
+        errors = {"courses": ["Field `exceptions` must be a list."],
+                  "row_errors": [{"section": "courses", "id": 1, "field": None,
+                                  "message": "Field `exceptions` must be a list."}]}
+
+        # WHEN
+        messages = explain_platform_errors(errors, payload.labels)
+
+        # THEN
+        self.assertEqual(["Class 'BIO 151': Field `exceptions` must be a list."], messages)
+
+    def test_row_error_for_an_unlabeled_row_names_its_section_and_id(self) -> None:
+        # GIVEN
+        errors = {"row_errors": [{"section": "course_schedules", "id": 9, "field": "sun_start_time",
+                                  "message": "Enter a valid time."}]}
+
+        # WHEN
+        messages = explain_platform_errors(errors, {})
+
+        # THEN
+        self.assertEqual(["course schedules 9: sun start time: Enter a valid time."], messages)
+
+    def test_errors_without_row_errors_name_their_section(self) -> None:
+        # GIVEN
+        errors = {"courses": "Unresolved `course_group` reference `7` in courses.",
+                  "details": "Invalid JSON in file."}
+
+        # WHEN
+        messages = explain_platform_errors(errors, {})
+
+        # THEN
+        self.assertEqual(["courses: Unresolved `course_group` reference `7` in courses.",
+                          "details: Invalid JSON in file."], messages)
 
     def test_unexplained(self) -> None:
         # WHEN

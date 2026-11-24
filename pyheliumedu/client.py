@@ -103,7 +103,8 @@ class HeliumClient:
         params = {"dry_run": "true"} if dry_run else {}
         if course_group_id is not None:
             params["course_group"] = str(course_group_id)
-        body = await self._request("POST", "/importexport/import/", params=params, files=files)
+        body = await self._request("POST", "/importexport/import/", params=params, files=files,
+                                   headers={"X-Helium-Structured-Errors": "1"})
 
         if not isinstance(body, dict):
             return ImportResult()
@@ -332,7 +333,8 @@ class HeliumClient:
                        *,
                        params: dict[str, str] | None = None,
                        files: dict[str, tuple[str, bytes, str]] | None = None,
-                       data: dict[str, str] | None = None) -> Any:
+                       data: dict[str, str] | None = None,
+                       headers: dict[str, str] | None = None) -> Any:
         try:
             response = await self._session.request(method,
                                                    f"{self.base_url}{path}",
@@ -341,7 +343,8 @@ class HeliumClient:
                                                    data=data,
                                                    headers={"Authorization": f"Bearer {self._token}",
                                                             "Accept": "application/json",
-                                                            "User-Agent": self.user_agent},
+                                                            "User-Agent": self.user_agent,
+                                                            **(headers or {})},
                                                    timeout=REQUEST_TIMEOUT)
         except httpx.HTTPError as e:
             raise HeliumConnectionError(f"Couldn't reach Helium: {e}") from e

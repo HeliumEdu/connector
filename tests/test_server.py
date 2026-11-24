@@ -259,7 +259,9 @@ class TestPreview(McpTestCase):
     async def test_helium_rejection_names_the_item(self) -> None:
         # GIVEN
         self.helium.answer("POST", "/importexport/import/", 400,
-                           {"homework": ["homework id 1, title: Ensure this field has no more than 255 characters."]})
+                           {"homework": ["homework id 1, title: Ensure this field has no more than 255 characters."],
+                            "row_errors": [{"section": "homework", "id": 1, "field": "title",
+                                            "message": "Ensure this field has no more than 255 characters."}]})
 
         # WHEN
         result = await self.call("preview_import_term", plan=self.plan_arguments())
@@ -267,11 +269,16 @@ class TestPreview(McpTestCase):
         # THEN
         self.assertEqual(["Assignment 'Problem Set 1' (BIO 151): title: Ensure this field has no more than 255 "
                           "characters."], result["structuredContent"]["problems"])
+        request = self.helium.requested("POST", "/importexport/import/")[0]
+        self.assertEqual("1", request.headers["X-Helium-Structured-Errors"],
+                         "the import asks Helium for its row errors as data")
 
     async def test_helium_rejecting_a_recurrence_rule_names_the_assignment(self) -> None:
         # GIVEN
         self.helium.answer("POST", "/importexport/import/", 400,
-                           {"homework": ["homework id 1, recurrence_rule: FREQ=HOURLY is not supported."]})
+                           {"homework": ["homework id 1, recurrence_rule: FREQ=HOURLY is not supported."],
+                            "row_errors": [{"section": "homework", "id": 1, "field": "recurrence_rule",
+                                            "message": "FREQ=HOURLY is not supported."}]})
         plan = self.plan_arguments(courses=[Course(title="CHEM 101", assignments=[
             Homework(title="Lab check-in", due_date=date(2026, 9, 2), due_time=time(9),
                      recurrence_rule="FREQ=HOURLY;COUNT=2")])])
