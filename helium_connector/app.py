@@ -2,7 +2,6 @@ import hmac
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Final
 
 import httpx
 from mcp.server.auth.routes import create_protected_resource_routes
@@ -15,12 +14,11 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from helium_connector import __version__
-from helium_connector.server import DOCS_URL, create_server
-from helium_connector.settings import MCP_PATH, SCOPES, Settings
+from helium_connector.platform_enums import OAUTH_SCOPES
+from helium_connector.server import create_server
+from helium_connector.settings import DOCS_URL, MCP_PATH, WELL_KNOWN_DIR, Settings
 
 logger = logging.getLogger(__name__)
-
-WELL_KNOWN_DIR: Final = Path(__file__).resolve().parent / "well_known"
 
 
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
@@ -35,8 +33,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     :return: The app.
     """
     server = create_server(settings, transport)
-    security = TransportSecuritySettings(enable_dns_rebinding_protection=bool(settings.allowed_hosts),
-                                         allowed_hosts=settings.allowed_hosts)
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     app = server.streamable_http_app(streamable_http_path=MCP_PATH,
                                      json_response=True,
                                      stateless_http=True,
@@ -44,12 +41,10 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                                      host="0.0.0.0")
     auth = server.settings.auth
     if auth is not None and auth.resource_server_url is not None:
-        # Ahead of the SDK's own: its metadata lists only scopes every token must hold, and a stateless endpoint
-        # answering in JSON has no event stream to offer a GET
         app.router.routes[:0] = [
             *create_protected_resource_routes(resource_url=auth.resource_server_url,
                                               authorization_servers=[auth.issuer_url],
-                                              scopes_supported=list(SCOPES)),
+                                              scopes_supported=list(OAUTH_SCOPES)),
             Route(MCP_PATH, _no_event_stream, methods=["GET"]),
         ]
     app.router.routes.append(Route("/", _docs, methods=["GET"]))
@@ -100,7 +95,7 @@ class ScopeChallengeMiddleware:
                 headers = MutableHeaders(scope=message)
                 challenge = headers.get("www-authenticate")
                 if challenge:
-                    headers["www-authenticate"] = f'{challenge}, scope="{" ".join(SCOPES)}"'
+                    headers["www-authenticate"] = f'{challenge}, scope="{" ".join(OAUTH_SCOPES)}"'
             await send(message)
 
         await self.app(scope, receive, send_with_scope)

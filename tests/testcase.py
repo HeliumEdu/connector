@@ -16,10 +16,6 @@ IMPORT_COUNTS = {"external_calendars": 0, "course_groups": 1, "courses": 2, "cou
 
 
 class FakeHelium:
-    """
-    Helium's API, answering from canned responses and recording every request.
-    """
-
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
         self.answers: dict[tuple[str, str], tuple[int, Any]] = {
@@ -46,9 +42,6 @@ class FakeHelium:
 
 
 def uploaded_import(request: httpx.Request) -> dict[str, Any]:
-    """
-    The JSON file a multipart import request carries.
-    """
     content = request.read().decode("utf-8")
     start = content.index("{", content.index("Content-Type: application/json"))
     end = content.rindex("}") + 1

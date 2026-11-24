@@ -1,7 +1,7 @@
 [project]
 name = "helium-connector"
 dynamic = ["version"]
-description = "MCP connector for Helium - Student Planner: import a term from syllabi and read your planner from an AI assistant"
+description = "MCP connector for Helium - Student Planner: import a term from your syllabi, and ask about what's due, your notes, classes, resources, and grades"
 readme = "README.md"
 license = "Apache-2.0"
 keywords = ["helium", "student-planner", "mcp", "syllabus", "semester", "quarter", "education"]
@@ -40,10 +40,10 @@ Documentation = "https://github.com/HeliumEdu/connector#readme"
 "Source Code" = "https://github.com/HeliumEdu/connector"
 
 [tool.setuptools]
-packages = ["heliumedu", "helium_connector"]
+packages = ["pyheliumedu", "helium_connector"]
 
 [tool.setuptools.package-data]
-heliumedu = ["py.typed"]
+pyheliumedu = ["py.typed"]
 helium_connector = ["py.typed", "well_known/*"]
 
 [tool.setuptools.dynamic]

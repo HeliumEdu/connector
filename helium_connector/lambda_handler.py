@@ -1,16 +1,13 @@
 import asyncio
-import logging
 from contextlib import AsyncExitStack
 from typing import Any
 
 from mangum import Mangum
 
 from helium_connector.app import create_app
-from helium_connector.settings import Settings
+from helium_connector.settings import Settings, configure_logging
 
-logging.getLogger().setLevel(logging.INFO)
-# Request URLs carry students' search text
-logging.getLogger("httpx").setLevel(logging.WARNING)
+configure_logging()
 
 app = create_app(Settings.from_env())
 

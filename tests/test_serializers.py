@@ -3,31 +3,33 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from helium_connector.platform_enums import RECURRENCE_HORIZON_YEARS
-from helium_connector.reads import (
-    MAX_NOTE_CHARS,
+from helium_connector.serializers import (
     delta_to_text,
     due_between,
     expand_events,
-    shape_assignments,
-    shape_classes,
-    shape_grades,
-    shape_needed_grade,
-    shape_notes,
-    shape_resources,
+    serialize_assignments,
+    serialize_classes,
+    serialize_grades,
+    serialize_needed_grade,
+    serialize_notes,
+    serialize_resources,
 )
+from helium_connector.settings import MAX_NOTE_CHARS
 
 CHICAGO = ZoneInfo("America/Chicago")
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
 LOS_ANGELES = ZoneInfo("America/Los_Angeles")
 COURSE_GROUPS = [{"id": 1, "title": "Spring 2026", "start_date": "2026-01-12", "end_date": "2026-05-08",
-                  "overall_grade": 91.5},
+                  "exceptions": "", "overall_grade": 91.5},
                  {"id": 2, "title": "Fall 2026", "start_date": "2026-08-31", "end_date": "2026-12-18",
-                  "overall_grade": -1}]
+                  "exceptions": "", "overall_grade": -1}]
 COURSES = [{"id": 10, "course_group": 2, "title": "BIO 151", "room": "Bagley 131", "is_online": False,
-            "teacher_name": "Dr. Smith", "teacher_email": "", "website": None, "credits": "4.00",
+            "teacher_name": "Dr. Smith", "teacher_email": "", "website": None, "credits": "4.00", "exceptions": "",
             "current_grade": -1},
-           {"id": 11, "course_group": 1, "title": "CHEM 101", "credits": "3.00", "current_grade": 88.0}]
+           {"id": 11, "course_group": 1, "title": "CHEM 101", "credits": "3.00", "exceptions": "",
+            "current_grade": 88.0}]
 SCHEDULES = [{"id": 100, "course": 10, "days_of_week": "0101010", "cycle_length": None, "is_week_based": False,
+              "exceptions": "",
               **{f"{day}_start_time": "00:00:00" for day in ("sun", "tue", "thu", "sat")},
               **{f"{day}_end_time": "00:00:00" for day in ("sun", "tue", "thu", "sat")},
               "mon_start_time": "10:00:00", "mon_end_time": "10:50:00",
@@ -36,10 +38,10 @@ SCHEDULES = [{"id": 100, "course": 10, "days_of_week": "0101010", "cycle_length"
 CATEGORIES = [{"id": 200, "course": 10, "title": "Exams", "weight": "60.00"}]
 
 
-class TestShapeClasses(unittest.TestCase):
+class TestSerializeClasses(unittest.TestCase):
     def test_current_terms_only(self) -> None:
         # WHEN
-        terms = shape_classes(COURSE_GROUPS, COURSES, SCHEDULES, CATEGORIES, date(2026, 10, 1), False)
+        terms = serialize_classes(COURSE_GROUPS, COURSES, SCHEDULES, CATEGORIES, date(2026, 10, 1), False)
 
         # THEN
         self.assertEqual(["Fall 2026"], [term["title"] for term in terms])
@@ -61,7 +63,7 @@ class TestShapeClasses(unittest.TestCase):
                    {**COURSES[0], "id": 12, "course_group": 2, "grade_scale_template": None}]
 
         # WHEN
-        terms = shape_classes(groups, courses, [], [], date(2026, 10, 1), False)
+        terms = serialize_classes(groups, courses, [], [], date(2026, 10, 1), False)
 
         # THEN
         self.assertEqual(["4.0 with +/-", "custom", None], [term["grade_scale"] for term in terms])
@@ -75,7 +77,7 @@ class TestShapeClasses(unittest.TestCase):
                       {"id": 202, "course": 10, "title": "Homework", "weight": "0.00"}]
 
         # WHEN
-        term = shape_classes(groups, courses, [], categories, date(2026, 10, 1), False)[0]
+        term = serialize_classes(groups, courses, [], categories, date(2026, 10, 1), False)[0]
 
         # THEN
         self.assertEqual(["2026-09-07", "2026-11-26"], term["no_class_dates"])
@@ -89,7 +91,7 @@ class TestShapeClasses(unittest.TestCase):
         schedules = [{**SCHEDULES[0], "end_date": "2026-12-11", "exceptions": "20261120,20261202"}]
 
         # WHEN
-        terms = shape_classes(COURSE_GROUPS, COURSES, schedules, CATEGORIES, date(2026, 10, 1), False)
+        terms = serialize_classes(COURSE_GROUPS, COURSES, schedules, CATEGORIES, date(2026, 10, 1), False)
 
         # THEN
         self.assertEqual(["Mon/Wed 10:00-10:50; Fri 11:00-11:50, until 2026-12-11, except 2026-11-20, 2026-12-02"],
@@ -97,7 +99,7 @@ class TestShapeClasses(unittest.TestCase):
 
     def test_past_terms(self) -> None:
         # WHEN
-        terms = shape_classes(COURSE_GROUPS, COURSES, SCHEDULES, CATEGORIES, date(2026, 10, 1), True)
+        terms = serialize_classes(COURSE_GROUPS, COURSES, SCHEDULES, CATEGORIES, date(2026, 10, 1), True)
 
         # THEN
         self.assertEqual(["Spring 2026", "Fall 2026"], [term["title"] for term in terms])
@@ -108,8 +110,9 @@ class TestShapeClasses(unittest.TestCase):
 class TestDescribeSchedules(unittest.TestCase):
     def test_every_pattern(self):
         # GIVEN
-        off = {f"{day}_{edge}_time": "00:00:00" for day in ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
-               for edge in ("start", "end")}
+        off = {"exceptions": "", **{f"{day}_{edge}_time": "00:00:00"
+                                    for day in ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+                                    for edge in ("start", "end")}}
         schedules = [
             {**off, "id": 1, "course": 10, "days_of_week": "0010000", "is_week_based": True, "week_offset": 1,
              "anchor_date": "2026-09-02", "tue_start_time": "13:00:00", "tue_end_time": "14:00:00"},
@@ -122,7 +125,7 @@ class TestDescribeSchedules(unittest.TestCase):
         ]
 
         # WHEN
-        terms = shape_classes(COURSE_GROUPS, COURSES, schedules, [], date(2026, 10, 1), False)
+        terms = serialize_classes(COURSE_GROUPS, COURSES, schedules, [], date(2026, 10, 1), False)
 
         # THEN
         self.assertEqual(["Week B (Week A includes 2026-09-02): Tue 13:00-14:00",
@@ -131,7 +134,7 @@ class TestDescribeSchedules(unittest.TestCase):
                          terms[0]["classes"][0]["meets"])
 
 
-class TestShapeAssignments(unittest.TestCase):
+class TestSerializeAssignments(unittest.TestCase):
     def test_assignments(self) -> None:
         # GIVEN
         homework = [{"id": 1, "title": "Problem Set 1", "course": 10, "category": 200, "all_day": False,
@@ -141,14 +144,15 @@ class TestShapeAssignments(unittest.TestCase):
                      "priority": 70}]
 
         # WHEN
-        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+        serialized = serialize_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
 
         # THEN
         self.assertEqual({"id": 1, "title": "Problem Set 1", "class": "BIO 151", "class_id": 10, "term": "Fall 2026",
                           "category": "Exams",
                           "due": "2026-09-14T23:59:00-05:00", "end": None, "all_day": False, "completed": True,
-                          "grade": "18/20", "priority": 50, "repeats": False}, shaped[0])
-        self.assertEqual(("2026-10-31", None, None), (shaped[1]["due"], shaped[1]["grade"], shaped[1]["category"]))
+                          "grade": "18/20", "priority": 50, "repeats": False}, serialized[0])
+        self.assertEqual(("2026-10-31", None, None),
+                         (serialized[1]["due"], serialized[1]["grade"], serialized[1]["category"]))
 
     def test_exam_end_time(self) -> None:
         # GIVEN
@@ -156,11 +160,11 @@ class TestShapeAssignments(unittest.TestCase):
                      "start": "2026-10-14T15:00:00Z", "end": "2026-10-14T16:50:00Z", "current_grade": "-1/100"}]
 
         # WHEN
-        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+        serialized = serialize_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
 
         # THEN
         self.assertEqual(("2026-10-14T10:00:00-05:00", "2026-10-14T11:50:00-05:00"),
-                         (shaped[0]["due"], shaped[0]["end"]))
+                         (serialized[0]["due"], serialized[0]["end"]))
 
     def test_repeating_assignment_is_listed_once_per_occurrence_in_local_time(self) -> None:
         # GIVEN
@@ -170,14 +174,14 @@ class TestShapeAssignments(unittest.TestCase):
                      "exception_dates": ["2026-10-30T21:00:00Z"]}]
 
         # WHEN
-        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+        serialized = serialize_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
 
         # THEN
         self.assertEqual([("2026-10-23T16:00:00-05:00", "2026-10-23T17:00:00-05:00"),
                           ("2026-11-06T16:00:00-06:00", "2026-11-06T17:00:00-06:00"),
                           ("2026-11-13T16:00:00-06:00", "2026-11-13T17:00:00-06:00")],
-                         [(item["due"], item["end"]) for item in shaped])
-        self.assertTrue(all(item["id"] == 4 and item["repeats"] and not item["completed"] for item in shaped))
+                         [(item["due"], item["end"]) for item in serialized])
+        self.assertTrue(all(item["id"] == 4 and item["repeats"] and not item["completed"] for item in serialized))
 
     def test_endless_repeating_assignment_stops_at_the_horizon(self) -> None:
         # GIVEN
@@ -186,10 +190,10 @@ class TestShapeAssignments(unittest.TestCase):
                      "start": begins.isoformat(), "end": begins.isoformat(), "recurrence_rule": "FREQ=YEARLY"}]
 
         # WHEN
-        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+        serialized = serialize_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
 
         # THEN
-        self.assertEqual(RECURRENCE_HORIZON_YEARS + 1, len(shaped))
+        self.assertEqual(RECURRENCE_HORIZON_YEARS + 1, len(serialized))
 
 
 class TestDueBetween(unittest.TestCase):
@@ -197,10 +201,10 @@ class TestDueBetween(unittest.TestCase):
         # GIVEN
         homework = [{"id": day, "title": f"Quiz {day}", "course": 10, "all_day": True,
                      "start": f"2026-09-{day:02d}T05:00:00Z"} for day in (17, 18, 19)]
-        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+        serialized = serialize_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
 
         # WHEN
-        kept = due_between(shaped, date(2026, 9, 18), date(2026, 9, 18))
+        kept = due_between(serialized, date(2026, 9, 18), date(2026, 9, 18))
 
         # THEN
         self.assertEqual(["Quiz 18"], [item["title"] for item in kept])
@@ -209,10 +213,10 @@ class TestDueBetween(unittest.TestCase):
         # GIVEN
         homework = [{"id": 1, "title": "Essay", "course": 10, "all_day": True, "start": "2026-09-16T22:00:00Z"},
                     {"id": 2, "title": "Lab", "course": 10, "all_day": False, "start": "2026-09-17T21:59:00Z"}]
-        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, AMSTERDAM)
+        serialized = serialize_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, AMSTERDAM)
 
         # WHEN
-        kept = due_between(shaped, date(2026, 9, 17), date(2026, 9, 17))
+        kept = due_between(serialized, date(2026, 9, 17), date(2026, 9, 17))
 
         # THEN
         self.assertEqual(["Essay", "Lab"], [item["title"] for item in kept])
@@ -222,16 +226,16 @@ class TestDueBetween(unittest.TestCase):
         homework = [{"id": 1, "title": "Before", "course": 10, "all_day": True, "start": "2026-10-31T05:00:00Z"},
                     {"id": 2, "title": "On", "course": 10, "all_day": True, "start": "2026-11-01T05:00:00Z"},
                     {"id": 3, "title": "After", "course": 10, "all_day": True, "start": "2026-11-02T06:00:00Z"}]
-        shaped = shape_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
+        serialized = serialize_assignments(homework, COURSES, CATEGORIES, COURSE_GROUPS, CHICAGO)
 
         # WHEN
-        kept = due_between(shaped, date(2026, 11, 1), date(2026, 11, 1))
+        kept = due_between(serialized, date(2026, 11, 1), date(2026, 11, 1))
 
         # THEN
         self.assertEqual(["On"], [item["title"] for item in kept])
 
 
-class TestShapeResources(unittest.TestCase):
+class TestSerializeResources(unittest.TestCase):
     def test_filtered_to_a_class(self) -> None:
         # GIVEN
         groups = [{"id": 1, "title": "Fall Textbooks"}, {"id": 2, "title": "Lab Gear"}]
@@ -240,8 +244,8 @@ class TestShapeResources(unittest.TestCase):
                      {"id": 6, "title": "Goggles", "status": 99, "resource_group": 2, "courses": [11]}]
 
         # WHEN
-        everything = shape_resources(groups, resources, COURSES)
-        for_bio = shape_resources(groups, resources, COURSES, class_id=10)
+        everything = serialize_resources(groups, resources, COURSES, None)
+        for_bio = serialize_resources(groups, resources, COURSES, 10)
 
         # THEN
         self.assertEqual(["Fall Textbooks", "Lab Gear"], [group["title"] for group in everything])
@@ -422,7 +426,7 @@ class TestExpandEvents(unittest.TestCase):
         self.assertEqual([], expanded)
 
 
-class TestShapeGrades(unittest.TestCase):
+class TestSerializeGrades(unittest.TestCase):
     def test_grades(self) -> None:
         # GIVEN
         exams = {"id": 3, "title": "Exams", "weight": 60, "overall_grade": -1, "trend": -0.0004, "num_homework": 2,
@@ -436,12 +440,13 @@ class TestShapeGrades(unittest.TestCase):
                                      "courses": []}]}
 
         # WHEN
-        shaped = shape_grades(grades, {2})["terms"]
+        serialized = serialize_grades(grades, {2})["terms"]
 
         # THEN
-        self.assertEqual(1, len(shaped))
-        self.assertEqual((2, 90.12, "up"), (shaped[0]["id"], shaped[0]["overall_grade"], shaped[0]["trend"]))
-        bio = shaped[0]["classes"][0]
+        self.assertEqual(1, len(serialized))
+        self.assertEqual((2, 90.12, "up"),
+                         (serialized[0]["id"], serialized[0]["overall_grade"], serialized[0]["trend"]))
+        bio = serialized[0]["classes"][0]
         self.assertEqual((10, None, None), (bio["id"], bio["overall_grade"], bio["trend"]))
         self.assertTrue(bio["weighted"])
         self.assertEqual({"id": 3, "title": "Exams", "weight": 60, "average_grade": None, "trend": "down",
@@ -463,15 +468,15 @@ class TestShapeGrades(unittest.TestCase):
                   "cumulative_gpa": 3.33333}
 
         # WHEN
-        shaped = shape_grades(grades)
+        serialized = serialize_grades(grades, {2})
 
         # THEN
-        term = shaped["terms"][0]
+        term = serialized["terms"][0]
         self.assertEqual((3.13, True), (term["gpa"], term["counts_toward_cumulative_gpa"]))
         self.assertEqual([None, "B", "B+"], [band["label"] for band in term["grade_scale"]])
         self.assertEqual([(3.25, "4.00"), (3.0, "4.00"), (None, "0.00")],
                          [(course["grade_point"], course["credits"]) for course in term["classes"]])
-        self.assertEqual(3.33, shaped["cumulative_gpa"])
+        self.assertEqual(3.33, serialized["cumulative_gpa"])
 
     def test_class_with_its_own_grade_scale(self) -> None:
         # GIVEN
@@ -489,7 +494,7 @@ class TestShapeGrades(unittest.TestCase):
                   "cumulative_gpa": 3.85}
 
         # WHEN
-        classes = shape_grades(grades)["terms"][0]["classes"]
+        classes = serialize_grades(grades, {2})["terms"][0]["classes"]
 
         # THEN
         self.assertEqual(["F", "A"], [band["label"] for band in classes[0]["grade_scale"]])
@@ -502,10 +507,10 @@ class TestShapeGrades(unittest.TestCase):
                   "cumulative_gpa": 3.5}
 
         # WHEN
-        shaped = shape_grades(grades)
+        serialized = serialize_grades(grades, {2})
 
         # THEN
-        self.assertFalse(shaped["terms"][0]["counts_toward_cumulative_gpa"])
+        self.assertFalse(serialized["terms"][0]["counts_toward_cumulative_gpa"])
 
     def test_term_without_a_grade_scale_has_no_gpa(self) -> None:
         # GIVEN
@@ -514,11 +519,11 @@ class TestShapeGrades(unittest.TestCase):
                   "cumulative_gpa": -1}
 
         # WHEN
-        shaped = shape_grades(grades)
+        serialized = serialize_grades(grades, {2})
 
         # THEN
-        self.assertEqual(([], None), (shaped["terms"][0]["grade_scale"], shaped["terms"][0]["gpa"]))
-        self.assertIsNone(shaped["cumulative_gpa"])
+        self.assertEqual(([], None), (serialized["terms"][0]["grade_scale"], serialized["terms"][0]["gpa"]))
+        self.assertIsNone(serialized["cumulative_gpa"])
 
     def test_grades_round_ties_as_the_app_does(self) -> None:
         # GIVEN
@@ -526,7 +531,7 @@ class TestShapeGrades(unittest.TestCase):
                                      "grade_scale": [], "courses": []}]}
 
         # WHEN
-        term = shape_grades(grades)["terms"][0]
+        term = serialize_grades(grades, {2})["terms"][0]
 
         # THEN
         self.assertEqual((90.13, 3.13), (term["overall_grade"], term["gpa"]))
@@ -536,11 +541,11 @@ class TestShapeGrades(unittest.TestCase):
         shown_in_the_app = {76.25: 76.3, 83.35: 83.3, 2.675: 2.7, 100.05: 100.0, 99.95: 100.0, -0.35: -0.4}
 
         # WHEN
-        shaped = {value: shape_needed_grade({"state": "achievable", "needed_grade": value})["needed_grade"]
-                  for value in shown_in_the_app}
+        serialized = {value: serialize_needed_grade({"state": "achievable", "needed_grade": value})["needed_grade"]
+                      for value in shown_in_the_app}
 
         # THEN
-        self.assertEqual(shown_in_the_app, shaped)
+        self.assertEqual(shown_in_the_app, serialized)
 
     def test_steady_trend(self) -> None:
         # GIVEN
@@ -548,39 +553,38 @@ class TestShapeGrades(unittest.TestCase):
                                      "grade_scale": [], "courses": []}]}
 
         # WHEN
-        shaped = shape_grades(grades)
+        serialized = serialize_grades(grades, {2})
 
         # THEN
-        self.assertEqual("steady", shaped["terms"][0]["trend"])
+        self.assertEqual("steady", serialized["terms"][0]["trend"])
 
     def test_needed_grade_rounds_as_the_app_shows_it(self) -> None:
         # GIVEN
         needed = {"state": "achievable", "needed_grade": 83.33333, "weighted": True,
                   "category": {"id": 3, "title": "Exams"},
-                  "assignment": {"id": 9, "title": "Final", "points_possible": 100.0, "needed_points": 83.33333},
-                  "total_weight_accounted_for": None}
+                  "assignment": {"id": 9, "title": "Final", "points_possible": 100.0, "needed_points": 83.33333}}
 
         # WHEN
-        shaped = shape_needed_grade(needed)
+        serialized = serialize_needed_grade(needed)
 
         # THEN
         self.assertEqual({"outcome": "achievable", "needed_grade": 83.3, "category": "Exams",
                           "assignment": {"title": "Final", "points_possible": 100.0, "needed_points": 83.3},
-                          "total_weight": None, "grade_band": None}, shaped)
+                          "grade_band": None}, serialized)
 
     def test_needed_grade_for_an_unreachable_gpa_names_the_top_band(self) -> None:
         # GIVEN
         needed = {"state": "gpa_unreachable", "needed_grade": 0, "weighted": True,
-                  "category": {"id": 3, "title": "Exams"}, "assignment": None, "total_weight_accounted_for": None,
+                  "category": {"id": 3, "title": "Exams"}, "assignment": None,
                   "grade_band": {"min_grade": 97.0, "grade_point": 4.0, "label": "A+"}}
 
         # WHEN
-        shaped = shape_needed_grade(needed)
+        serialized = serialize_needed_grade(needed)
 
         # THEN
         self.assertEqual({"outcome": "gpa_unreachable", "needed_grade": 0, "category": "Exams", "assignment": None,
-                          "total_weight": None, "grade_band": {"label": "A+", "min_grade": 97.0, "grade_point": 4.0}},
-                         shaped)
+                          "grade_band": {"label": "A+", "min_grade": 97.0, "grade_point": 4.0}},
+                         serialized)
 
 
 class TestNotes(unittest.TestCase):
@@ -592,7 +596,7 @@ class TestNotes(unittest.TestCase):
         self.assertEqual("plain", delta_to_text('{"ops": [{"insert": "plain"}]}'))
         self.assertEqual("", delta_to_text(None))
 
-    def test_notes_most_recent_first(self) -> None:
+    def test_notes_keep_helium_order_and_trim_text(self) -> None:
         # GIVEN
         notes = [{"id": 1, "title": "Old", "content": {"ops": [{"insert": "a"}]},
                   "updated_at": "2026-09-01T00:00:00Z"},
@@ -601,14 +605,14 @@ class TestNotes(unittest.TestCase):
                   "linked_entity_type": "homework", "course_id": 10}]
 
         # WHEN
-        shaped = shape_notes(notes, [{"id": 10, "title": "BIO 151"}], CHICAGO, 1)
+        serialized = serialize_notes(notes, [{"id": 10, "title": "BIO 151"}], CHICAGO)
 
         # THEN
-        self.assertEqual(1, len(shaped))
-        self.assertEqual(("New", "Lab 1", "homework", "BIO 151"),
-                         (shaped[0]["title"], shaped[0]["linked_to"], shaped[0]["linked_type"], shaped[0]["class"]))
-        self.assertEqual("2026-09-05T10:00:00-05:00", shaped[0]["updated"])
-        self.assertEqual(MAX_NOTE_CHARS, len(shaped[0]["text"]))
+        self.assertEqual(["Old", "New"], [note["title"] for note in serialized])
+        new = serialized[1]
+        self.assertEqual(("Lab 1", "homework", "BIO 151"), (new["linked_to"], new["linked_type"], new["class"]))
+        self.assertEqual("2026-09-05T10:00:00-05:00", new["updated"])
+        self.assertEqual(MAX_NOTE_CHARS, len(new["text"]))
 
     def test_class_note_names_its_class(self) -> None:
         # GIVEN
@@ -617,9 +621,9 @@ class TestNotes(unittest.TestCase):
                   "linked_entity_type": "course", "course_id": 10}]
 
         # WHEN
-        shaped = shape_notes(notes, [{"id": 10, "title": "BIO 151"}], CHICAGO, 5)
+        serialized = serialize_notes(notes, [{"id": 10, "title": "BIO 151"}], CHICAGO)
 
         # THEN
         self.assertEqual(("BIO 151", "course", "BIO 151", "Office hours Tuesday"),
-                         (shaped[0]["linked_to"], shaped[0]["linked_type"], shaped[0]["class"],
-                          shaped[0]["text"].strip()))
+                         (serialized[0]["linked_to"], serialized[0]["linked_type"], serialized[0]["class"],
+                          serialized[0]["text"].strip()))

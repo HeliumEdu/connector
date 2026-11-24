@@ -2,8 +2,9 @@ from datetime import date
 
 import httpx
 
-from heliumedu.client import ICS_FILE_NAME, IMPORT_FILE_NAME, HeliumClient
-from heliumedu.exception import (
+from pyheliumedu import __version__
+from pyheliumedu.client import ICS_FILE_NAME, IMPORT_FILE_NAME, HeliumClient
+from pyheliumedu.exception import (
     HeliumAuthError,
     HeliumConnectionError,
     HeliumNotFoundError,
@@ -47,7 +48,7 @@ class TestGetUser(HeliumClientTestCase):
         await client.get_user()
 
         # THEN
-        self.assertEqual("heliumedu helium-connector/1.0.0",
+        self.assertEqual(f"pyheliumedu/{__version__} helium-connector/1.0.0",
                          self.helium.requests[0].headers["User-Agent"])
 
     async def test_refused_token(self) -> None:
@@ -75,18 +76,16 @@ class TestImportData(HeliumClientTestCase):
         self.assertNotIn("dry_run", request.url.params)
         self.assertEqual(IMPORT_COUNTS, result.counts)
         self.assertEqual({}, result.ids)
-        self.assertFalse(result.dry_run)
 
     async def test_dry_run(self) -> None:
         # GIVEN
         client = self.given_client()
 
         # WHEN
-        result = await client.import_data({}, dry_run=True)
+        await client.import_data({}, dry_run=True)
 
         # THEN
         self.assertEqual("true", self.helium.requested("POST", "/importexport/import/")[0].url.params["dry_run"])
-        self.assertTrue(result.dry_run)
 
     async def test_import_ics_into_a_class(self) -> None:
         # GIVEN
@@ -105,7 +104,6 @@ class TestImportData(HeliumClientTestCase):
         self.assertIn('name="course"\r\n\r\n52', body)
         self.assertEqual("true", request.url.params["dry_run"])
         self.assertEqual(4, result.counts["homework"])
-        self.assertTrue(result.dry_run)
 
     async def test_import_ics_as_events(self) -> None:
         # GIVEN
@@ -196,38 +194,29 @@ class TestListing(HeliumClientTestCase):
         self.assertEqual(["Fall Textbooks"], [group["title"] for group in groups])
         self.assertEqual(["Campbell Biology"], [resource["title"] for resource in resources])
 
-    async def test_window_needs_both_ends(self) -> None:
+    async def test_window_sends_only_the_ends_given(self) -> None:
         # GIVEN
-        client = self.given_client()
-
-        # WHEN / THEN
-        with self.assertRaises(ValueError):
-            await client.list_events(date(2026, 9, 1))
-        self.assertEqual([], self.helium.requests)
-
-    async def test_notes_include_content(self) -> None:
-        # GIVEN
-        self.helium.answer("GET", "/planner/notes/", 200, [])
+        self.helium.answer("GET", "/planner/events/", 200, [])
         client = self.given_client()
 
         # WHEN
-        await client.list_notes("mitosis", homework_id=9)
+        await client.list_events(date(2026, 9, 1))
 
         # THEN
-        params = self.helium.requested("GET", "/planner/notes/")[0].url.params
-        self.assertEqual({"include_content": "true", "search": "mitosis", "homework": "9"}, dict(params))
+        self.assertEqual({"from": "2026-09-01"}, dict(self.helium.requested("GET", "/planner/events/")[0].url.params))
 
     async def test_notes_filters(self) -> None:
         # GIVEN
-        self.helium.answer("GET", "/planner/notes/", 200, [])
+        self.helium.answer("GET", "/planner/notes/", 200, {"count": 0, "next": None, "results": []})
         client = self.given_client()
 
         # WHEN
-        await client.list_notes(course_id=3, event_id=4, resource_id=5)
+        await client.list_notes_page(homework_id=9, course_id=3, event_id=4, resource_id=5)
 
         # THEN
         params = self.helium.requested("GET", "/planner/notes/")[0].url.params
-        self.assertEqual({"include_content": "true", "course": "3", "event": "4", "resource": "5"}, dict(params))
+        self.assertEqual({"include_content": "true", "homework": "9", "course": "3", "event": "4", "resource": "5",
+                          "ordering": "-updated_at", "page": "1", "page_size": "10"}, dict(params))
 
     async def test_needed_grade(self) -> None:
         # GIVEN

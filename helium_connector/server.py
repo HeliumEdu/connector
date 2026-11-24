@@ -15,15 +15,17 @@ from mcp.types import CallToolResult, Icon, InputRequiredResult, TextContent, To
 from pydantic import AnyHttpUrl, Field, ValidationError
 
 from helium_connector import __version__
-from helium_connector.auth import AGENT, HeliumTokenVerifier
+from helium_connector.auth import HeliumTokenVerifier
 from helium_connector.models import ExistingTerm, ImportPlan, TermPlan
-from helium_connector.planning import build_import, describe_import, existing_term, explain_platform_errors, \
-    summarize, to_confirm, validate, warnings
-from helium_connector.reads import due_between, expand_events, shape_assignments, shape_classes, \
-    shape_grades, shape_needed_grade, shape_notes, shape_resources, term_grade_scale_name
-from helium_connector.settings import SCOPES, Settings
-from heliumedu.client import HeliumClient
-from heliumedu.exception import (
+from helium_connector.planning import build_import, describe_created, describe_import, existing_term, \
+    explain_platform_errors, summarize, to_confirm, validate, warnings
+from helium_connector.platform_enums import OAUTH_SCOPES
+from helium_connector.serializers import due_between, expand_events, serialize_assignments, serialize_classes, \
+    serialize_grades, serialize_needed_grade, serialize_notes, serialize_resources, term_grade_scale_name
+from helium_connector.settings import AGENT, DEFAULT_NOTES_PAGE_SIZE, DEFAULT_PAGE_SIZE, DEFAULT_WINDOW_DAYS, \
+    DOCS_URL, ICON_URL, MAX_NOTES_PAGE_SIZE, MAX_PAGE_SIZE, MAX_WINDOW_DAYS, WEBSITE_URL, Settings
+from pyheliumedu.client import HeliumClient
+from pyheliumedu.exception import (
     HeliumAuthError,
     HeliumConnectionError,
     HeliumError,
@@ -35,20 +37,12 @@ from heliumedu.exception import (
 
 logger = logging.getLogger(__name__)
 
-DOCS_URL: Final = ("https://www.heliumedu.com/support/getting-started/where-to-start-with-helium/"
-                   "#use-ai-as-a-scheduling-assistant")
-ICON_URL: Final = "https://www.heliumedu.com/icon-512.png"
-DEFAULT_WINDOW_DAYS: Final = 7
-MAX_WINDOW_DAYS: Final = 366
-DEFAULT_PAGE_SIZE: Final = 25
-MAX_PAGE_SIZE: Final = 100
 DUPLICATES_DESCRIPTION: Final = ("Import even if the new term (same title and dates) or a class (same title, in an "
                                  "existing term) is already in Helium.")
 ICS_DESCRIPTION: Final = ("The calendar as .ics text: the whole file, or, from a file that covers several classes, "
                           "a calendar of one class's entries with the file's time zones.")
 ICS_CLASS_DESCRIPTION: Final = ("The class whose assignments the entries become (an id from list_classes, or from "
                                 "what import_term returned). Unset imports them as events.")
-_ICS_SECTION_NAMES: Final = {"homework": "assignments", "events": "events"}
 BEFORE_IMPORT: Final = ("Nothing is saved yet. Show the student this summary, including anything to confirm, and "
                         "import only after they confirm.")
 INSTRUCTIONS: Final = (
@@ -61,7 +55,7 @@ INSTRUCTIONS: Final = (
     "by class and import each part, as its own calendar, into its class (or as events, for entries with no class). "
     "A calendar has only titles, dates, and times; grading, meeting times, and credits still come from the syllabus "
     "or the student. A Helium export file (a backup, or a schedule shared by another student) imports in the Helium "
-    "app under Settings, Import / Export.\n\n"
+    "app under Settings, Import/Export.\n\n"
     "A term holds every class the student takes in it. Imports only add to Helium, and nothing they add can be "
     "changed or deleted through these tools, so gather everything before importing: the syllabus for each class, any "
     "calendar files, and the student's answers. Then ask whether they have more syllabi, calendars, or details for "
@@ -96,7 +90,7 @@ SYLLABUS_PROMPT: Final = """Set up my term in Helium from my syllabi.
 1. Ask me to attach the syllabus for every class I'm taking this term, and any .ics calendar files I have (like a \
 professor's assignment schedule). Keep asking until I say that's everything. If the term is already in Helium \
 (list_classes shows it), import new classes into it by its id. If I have a Helium export file, tell me to import it \
-in the Helium app under Settings, Import / Export.
+in the Helium app under Settings, Import/Export.
 2. Read every syllabus, then ask me about anything they don't make clear. Use only my files and my answers; don't \
 fill gaps from what's typical. Ask especially about:
    - the term's first and last days, and days with no class (holidays, breaks)
@@ -147,14 +141,12 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         name="helium",
         title="Helium",
         instructions=INSTRUCTIONS,
-        website_url="https://www.heliumedu.com",
+        website_url=WEBSITE_URL,
         icons=[Icon(src=ICON_URL, mime_type="image/png", sizes=["512x512"])],
         version=__version__,
         token_verifier=verifier,
-        # subscriptions/listen answers with a long-lived stream, which a stateless Lambda answering in JSON can't hold
         subscriptions=False,
-        # Strings, so the URLs keep their exact form (an issuer is compared as an exact string)
-        auth=AuthSettings.model_validate({"issuer_url": settings.issuer_url,
+        auth=AuthSettings.model_validate({"issuer_url": settings.api_url,
                                           "resource_server_url": settings.resource_url,
                                           "service_documentation_url": DOCS_URL,
                                           "validate_token_resource": False}),
@@ -168,7 +160,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         try:
             user = await verifier.user_for(token.token)
             async with httpx.AsyncClient(transport=transport) as session:
-                time_zone = ZoneInfo((user.get("settings") or {}).get("time_zone") or "UTC")
+                time_zone = ZoneInfo(user["settings"]["time_zone"])
                 yield HeliumClient(session, token.token, settings.api_url, agent=AGENT), time_zone
         except HeliumError as e:
             raise _tool_error(e) from e
@@ -178,8 +170,6 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                            class_id: int | None,
                            target_id: int | None) -> dict[str, Any]:
         target, wanted = ("target_gpa", target_gpa) if target_grade is None else ("target_grade", target_grade)
-        if target_grade is not None and target_gpa is not None:
-            return {"problems": ["Give target_grade or target_gpa, not both."]}
         if class_id is None or target_id is None:
             return {"problems": [f"{target} needs class_id and target_id."]}
         async with helium() as (client, _):
@@ -192,7 +182,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                                      for message in (value if isinstance(value, list) else [value])]}
             except HeliumNotFoundError:
                 return {"problems": [f"Class {class_id} isn't in Helium. get_grades gives each class's id."]}
-        return {"class_id": class_id, target: wanted, **shape_needed_grade(needed)}
+        return {"class_id": class_id, target: wanted, **serialize_needed_grade(needed)}
 
     async def import_plan(plan: ImportPlan, *, dry_run: bool, allow_duplicates: bool) -> dict[str, Any]:
         outcome = "ready" if dry_run else "imported"
@@ -226,8 +216,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                 result = await client.import_ics(ics, course_id=course_id, dry_run=dry_run)
             except HeliumValidationError as e:
                 return {outcome: False, "problems": _explain_ics_errors((e.meta or {}).get("errors"), course_id)}
-        created = {name: result.counts[section] for section, name in _ICS_SECTION_NAMES.items()
-                   if result.counts.get(section)}
+        created = describe_created(result.counts)
         if dry_run:
             return {"ready": True, "saved": False, "before_import": BEFORE_IMPORT, "time_zone": time_zone.key,
                     "class_id": course_id, "would_create": created}
@@ -240,8 +229,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                    plan: TermPlan,
                    *,
                    dry_run: bool,
-                   course_group_id: int | None = None,
-                   term_grade_scale: str | None = None) -> dict[str, Any]:
+                   course_group_id: int | None,
+                   term_grade_scale: str | None) -> dict[str, Any]:
         outcome = "ready" if dry_run else "imported"
         payload = build_import(plan, time_zone)
         try:
@@ -296,7 +285,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                  description="Save an .ics calendar file's entries to Helium, all at once: as assignments in a class "
                              "already in Helium (uncategorized and ungraded, since a calendar has only titles, "
                              "dates, and times), or as events. A repeating entry stays repeating if Helium supports "
-                             "its rule, without its cancelled occurrences, and cancelled entries are left out. Adds "
+                             "its rule (else it imports once, on its first date), without its cancelled occurrences, "
+                             "and cancelled entries are left out. Adds "
                              "to the account; changes nothing already there. Importing the same file twice adds its "
                              "entries twice. preview_import_ics shows what it would create.",
                  annotations=ToolAnnotations(title="Import an .ics file", read_only_hint=False,
@@ -320,7 +310,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         return STUDY_PROMPT
 
     @server.tool(title="List assignments",
-                 description="List the user's assignments (homework, quizzes, exams, projects) due in a window, "
+                 description="List the student's assignments (homework, quizzes, exams, projects) due in a window, "
                              "with class, term, category, completion, and grade. Defaults to the next "
                              f"{DEFAULT_WINDOW_DAYS} days; for overdue, the past {MAX_WINDOW_DAYS} days; with a "
                              "query, the class's dates (with class_id) or the current terms. Returns limit at a "
@@ -346,7 +336,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
             course = next((course for course in courses if course["id"] == class_id), None)
             start, end = _read_window(time_zone, start_date, end_date, backward=status == "overdue",
                                       searching=bool(query), course=course, course_groups=groups)
-            homework = await client.list_homework(start - timedelta(days=1), end + timedelta(days=2),
+            homework = await client.list_homework(start, end + timedelta(days=1),
                                                   course_ids=[class_id] if class_id is not None else None,
                                                   completed={"incomplete": False, "completed": True}.get(status),
                                                   overdue=True if status == "overdue" else None,
@@ -357,22 +347,23 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
             if status in ("all", "incomplete") and query is None and start >= _today(time_zone):
                 overdue_start, _ = _window(None, None, time_zone, backward=True)
                 overdue_homework = await client.list_homework(
-                    overdue_start - timedelta(days=1), start + timedelta(days=1),
+                    overdue_start, start,
                     course_ids=[class_id] if class_id is not None else None, overdue=True,
                     category_ids=[category_id] if category_id is not None else None)
-                overdue = len(due_between(shape_assignments(overdue_homework, courses, categories, groups, time_zone),
+                overdue = len(due_between(serialize_assignments(overdue_homework, courses, categories, groups,
+                                                                time_zone),
                                           overdue_start, start - timedelta(days=1)))
-        assignments = due_between(shape_assignments(homework, courses, categories, groups, time_zone), start, end)
+        assignments = due_between(serialize_assignments(homework, courses, categories, groups, time_zone), start, end)
         result: dict[str, Any] = {"start_date": start.isoformat(), "end_date": end.isoformat(),
                                   **_paged("assignments", assignments, limit, page)}
         if overdue:
             result["overdue_before_window"] = overdue
-            result["note"] = (f"{overdue} unfinished assignment(s) are overdue, due before this window. List them "
-                              "with status overdue and mention them first.")
+            result["note"] = (f"{overdue} unfinished assignment(s) are overdue, due before this window; "
+                              "list_assignments with status overdue lists them.")
         return result
 
     @server.tool(title="List events",
-                 description="List the user's events (ungraded calendar items) in a window, with repeating events "
+                 description="List the student's events (ungraded calendar items) in a window, with repeating events "
                              f"listed per occurrence. Defaults to the next {DEFAULT_WINDOW_DAYS} days; with a query, "
                              "the current terms. Returns limit at a time, with total and has_more; pass page "
                              "for the next.",
@@ -393,7 +384,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                 **_paged("events", expand_events(events, start, end, time_zone), limit, page)}
 
     @server.tool(title="List notes",
-                 description="List the user's notes as plain text: all of them, those matching a query, a "
+                 description="List the student's notes as plain text: all of them, those matching a query, a "
                              "class's (its own note and its assignments' and resources'), or the note on one "
                              "assignment, event, or resource. Returns limit at a time, with total and has_more; pass "
                              "page for the next. Works only if the student allowed notes when connecting Helium.",
@@ -415,7 +406,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                          resource_id: int | None = Field(default=None,
                                                          description="Only the note on this resource (an id from "
                                                                      "list_resources)."),
-                         limit: int = Field(default=5, ge=1, le=10),
+                         limit: int = Field(default=DEFAULT_NOTES_PAGE_SIZE, ge=1, le=MAX_NOTES_PAGE_SIZE),
                          page: int = Field(default=1, ge=1)) -> dict[str, Any]:
         async with helium() as (client, time_zone):
             try:
@@ -427,10 +418,10 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                                          "Helium and check \"Read your notes\", then try again.") from e
             courses = await client.list_courses()
         return {"total": notes.total, "page": page, "has_more": notes.has_more,
-                "notes": shape_notes(notes.items, courses, time_zone, limit)}
+                "notes": serialize_notes(notes.items, courses, time_zone)}
 
     @server.tool(title="List classes",
-                 description="List the user's classes by term, with the term's grade scale, and each class's room, "
+                 description="List the student's classes by term, with the term's grade scale, and each class's room, "
                              "teacher, credits, current grade, meeting times, grading categories, and its own grade "
                              "scale when it has one.",
                  annotations=_reads("List classes"),
@@ -443,10 +434,11 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
             courses = await client.list_courses()
             schedules = await client.list_course_schedules()
             categories = await client.list_categories()
-        return {"terms": shape_classes(groups, courses, schedules, categories, _today(time_zone), include_past_terms)}
+        return {"terms": serialize_classes(groups, courses, schedules, categories, _today(time_zone),
+                                           include_past_terms)}
 
     @server.tool(title="List resources",
-                 description="List the user's resources (textbooks, materials, links) by resource group, with "
+                 description="List the student's resources (textbooks, materials, links) by resource group, with "
                              "status, condition, website, price, and the classes each is for.",
                  annotations=_reads("List resources"),
                  meta=_requires("planner:read"))
@@ -457,10 +449,10 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
             groups = await client.list_resource_groups()
             resources = await client.list_resources()
             courses = await client.list_courses()
-        return {"resource_groups": shape_resources(groups, resources, courses, class_id)}
+        return {"resource_groups": serialize_resources(groups, resources, courses, class_id)}
 
     @server.tool(title="Get grades",
-                 description="Get the user's grades: each term's GPA, grade scale, and classes, with overall "
+                 description="Get the student's grades: each term's GPA, grade scale, and classes, with overall "
                              "grade, grade point, the class's own grade scale when it has one (else the term's "
                              "applies), credits, trend (up, down, or steady), weighted or points-based "
                              "grading, and each category's weight, average, and ungraded assignments; plus "
@@ -499,7 +491,7 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
         today = _today(time_zone)
         term_ids = {group["id"] for group in groups
                     if include_past_terms or date.fromisoformat(group["end_date"]) >= today}
-        return shape_grades(grades, term_ids)
+        return serialize_grades(grades, term_ids)
 
     return server
 
@@ -549,7 +541,7 @@ class HeliumServer(MCPServer[Any]):
 
     def _insufficient_scope(self, message: str) -> CallToolResult:
         challenge = (f'Bearer resource_metadata="{self.resource_metadata_url}", error="insufficient_scope", '
-                     f'error_description="This connection needs more access", scope="{" ".join(SCOPES)}"')
+                     f'error_description="This connection needs more access", scope="{" ".join(OAUTH_SCOPES)}"')
         return CallToolResult(content=[TextContent(type="text", text=message)], is_error=True,
                               _meta={"mcp/www_authenticate": [challenge]})
 
@@ -581,10 +573,6 @@ def _resolve_references(node: Any, definitions: dict[str, Any]) -> Any:
 
 
 def _drop_field_titles(schema: Any) -> None:
-    """
-    Drop the titles pydantic generates from field names ("Start Time" for start_time): they restate the name and
-    cost tokens in every tool listing. Model titles (Term, Class, Assignment) stay.
-    """
     if isinstance(schema, dict):
         for name, field in (schema.get("properties") or {}).items():
             if isinstance(field, dict) and str(field.get("title", "")).replace(" ", "_").casefold() == name.casefold():
@@ -606,15 +594,12 @@ def _reads(title: str) -> ToolAnnotations:
 
 
 async def _duplicates(client: HeliumClient, plan: TermPlan, course_group_id: int | None) -> list[str]:
-    """
-    What's already in Helium: the new term (same title and dates), or classes already in an existing term. Skipped when
-    the connection can't read what's there.
-    """
     try:
         if course_group_id is None:
             groups = await client.list_course_groups()
             term = plan.course_group
-            if any(group["title"] == term.title and group["start_date"] == term.start_date.isoformat()
+            if any(group["title"].casefold() == term.title.casefold()
+                   and group["start_date"] == term.start_date.isoformat()
                    and group["end_date"] == term.end_date.isoformat() for group in groups):
                 return [f"A term named '{term.title}' with these dates is already in Helium. Set allow_duplicates "
                         f"to import a second copy, or import into it with the term's id."]
@@ -643,12 +628,12 @@ def _notes(plan: TermPlan) -> dict[str, list[str]]:
 def _tool_error(e: HeliumError) -> ToolError:
     if isinstance(e, HeliumAuthError):
         return ToolError("Helium signed this connection out. Reconnect Helium and sign in, then try again.")
-    elif isinstance(e, HeliumPermissionError):
+    if isinstance(e, HeliumPermissionError):
         return ToolError("This Helium connection wasn't given access for that. Reconnect Helium and allow what it "
                          "asks for, then try again.")
-    elif isinstance(e, HeliumRateLimitedError):
+    if isinstance(e, HeliumRateLimitedError):
         return ToolError(f"Helium asked to slow down. Try again in {(e.meta or {}).get('retry_after')} seconds.")
-    elif isinstance(e, HeliumConnectionError):
+    if isinstance(e, HeliumConnectionError):
         logger.warning(f"Helium unreachable: {e}")
         return ToolError("Helium couldn't be reached. Try again in a minute.")
     return ToolError(f"Helium couldn't do that: {e}")
@@ -667,17 +652,14 @@ def _read_window(time_zone: ZoneInfo,
                  course: dict[str, Any] | None = None,
                  course_groups: list[dict[str, Any]] | None = None) -> tuple[date, date]:
     if searching and not backward and start is None and end is None:
-        dates = _course_dates(course) if course else _current_terms(course_groups or [], _today(time_zone))
+        if course:
+            course_start = date.fromisoformat(course["start_date"])
+            return course_start, min(date.fromisoformat(course["end_date"]),
+                                     course_start + timedelta(days=MAX_WINDOW_DAYS))
+        dates = _current_terms(course_groups or [], _today(time_zone))
         if dates:
             return dates
     return _window(start, end, time_zone, backward=backward)
-
-
-def _course_dates(course: dict[str, Any]) -> tuple[date, date] | None:
-    if not course.get("start_date") or not course.get("end_date"):
-        return None
-    start = date.fromisoformat(course["start_date"])
-    return start, min(date.fromisoformat(course["end_date"]), start + timedelta(days=MAX_WINDOW_DAYS))
 
 
 def _paged(name: str, items: list[dict[str, Any]], limit: int, page: int) -> dict[str, Any]:
@@ -695,7 +677,7 @@ def _current_terms(course_groups: list[dict[str, Any]], today: date) -> tuple[da
     return start, min(end, start + timedelta(days=MAX_WINDOW_DAYS))
 
 
-def _window(start: date | None, end: date | None, time_zone: ZoneInfo, backward: bool = False) -> tuple[date, date]:
+def _window(start: date | None, end: date | None, time_zone: ZoneInfo, backward: bool) -> tuple[date, date]:
     if backward and start is None and end is None:
         end = _today(time_zone)
         start = end - timedelta(days=MAX_WINDOW_DAYS - 1)

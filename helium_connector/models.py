@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from helium_connector.platform_enums import GradeScalePreset
+from helium_connector.settings import MAX_ASSIGNMENTS, MAX_EVENTS
 
 Weekday = Literal["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 Title = Annotated[str, Field(min_length=1)]
@@ -75,7 +76,7 @@ class DayCycleSchedule(_Schedule):
     pattern: Literal["day_cycle"]
     cycle_length: int = Field(ge=2, le=20,
                               description="School days in one cycle (2 for A/B Day). The cycle advances one day per "
-                                          "school day, Monday to Friday, skipping no-class dates.")
+                                          "school day, Monday to Friday, skipping the term's no-class dates.")
     day_one: date = Field(description="A school day within the class's dates that is cycle Day 1 (an A Day, on an "
                                       "A/B Day cycle). The cycle counts school days from it.")
     slots: list[CycleSlot] = Field(min_length=1, max_length=20)
@@ -151,7 +152,7 @@ class Course(_Input):
                                       description="When the class meets. A class can have several (a lecture and a "
                                                   "lab).")
     categories: list[Category] = Field(default_factory=list, max_length=50)
-    homework: list[Homework] = Field(default_factory=list, max_length=1000, alias="assignments")
+    homework: list[Homework] = Field(default_factory=list, max_length=MAX_ASSIGNMENTS, alias="assignments")
 
 
 class Event(_Input):
@@ -196,7 +197,7 @@ class TermPlan(_Input):
 
     course_group: CourseGroup = Field(alias="term")
     courses: list[Course] = Field(min_length=1, max_length=50, alias="classes")
-    events: list[Event] = Field(default_factory=list, max_length=500)
+    events: list[Event] = Field(default_factory=list, max_length=MAX_EVENTS)
 
 
 class ExistingTerm(_Input):
@@ -218,4 +219,4 @@ class ImportPlan(_Input):
 
     course_group: CourseGroup | ExistingTerm = Field(alias="term")
     courses: list[Course] = Field(min_length=1, max_length=50, alias="classes")
-    events: list[Event] = Field(default_factory=list, max_length=500)
+    events: list[Event] = Field(default_factory=list, max_length=MAX_EVENTS)

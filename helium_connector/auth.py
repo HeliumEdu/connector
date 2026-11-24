@@ -2,20 +2,16 @@ import hashlib
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, Final
+from typing import Any
 
 import httpx
 from mcp.server.auth.provider import AccessToken
 
-from helium_connector import __version__
-from heliumedu.client import HeliumClient
-from heliumedu.exception import HeliumAuthError
+from helium_connector.settings import AGENT, USER_CACHE_SECONDS, USER_CACHE_SIZE
+from pyheliumedu.client import HeliumClient
+from pyheliumedu.exception import HeliumAuthError
 
 logger = logging.getLogger(__name__)
-
-USER_CACHE_SECONDS: Final = 60
-USER_CACHE_SIZE: Final = 1000
-AGENT: Final = f"helium-connector/{__version__}"
 
 
 class HeliumTokenVerifier:
@@ -35,7 +31,7 @@ class HeliumTokenVerifier:
 
         :param token: The bearer token.
         :return: The token's access info, or ``None`` when Helium refuses it (so the client re-authorizes).
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium can't be reached, so an outage isn't
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium can't be reached, so an outage isn't
             mistaken for a revoked token.
         """
         try:
@@ -50,7 +46,7 @@ class HeliumTokenVerifier:
 
         :param token: The bearer token.
         :return: The user, as ``GET /auth/user/`` returns it.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the token or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the token or can't be reached.
         """
         key = hashlib.sha256(token.encode("utf-8")).hexdigest()
         cached = self._users.get(key)

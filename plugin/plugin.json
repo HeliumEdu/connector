@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "helium",
-  "description": "Import a term from your syllabi into your Helium student planner, and ask about what's due, your classes, notes, resources, and grades.",
+  "description": "Import a term from your syllabi into your Helium student planner, and ask about what's due, your notes, classes, resources, and grades.",
   "author": {
     "name": "Helium Edu, LLC",
     "email": "contact@heliumedu.com",

@@ -5,7 +5,8 @@ from typing import Any, Final
 
 import httpx
 
-from heliumedu.exception import (
+from pyheliumedu import __version__
+from pyheliumedu.exception import (
     HeliumAuthError,
     HeliumConnectionError,
     HeliumNotFoundError,
@@ -36,8 +37,6 @@ class ImportResult:
     counts: dict[str, int] = field(default_factory=dict)
     #: The ids Helium assigned, keyed by import section, then by the id the entity had in the file.
     ids: dict[str, dict[str, int]] = field(default_factory=dict)
-    #: Whether this was a dry run (validated, then rolled back).
-    dry_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,14 +71,14 @@ class HeliumClient:
         self.base_url: str = base_url.rstrip("/")
         #: The ``User-Agent`` every request sends: this package, then the caller's own product (e.g.
         #: ``helium-connector/1.0.0``) when given.
-        self.user_agent: str = "heliumedu" + (f" {agent}" if agent else "")
+        self.user_agent: str = f"pyheliumedu/{__version__}" + (f" {agent}" if agent else "")
 
     async def get_user(self) -> dict[str, Any]:
         """
         Get the token's user, including their settings (``settings.time_zone`` is the time_zone Helium shows them in).
 
         :return: The user, as ``GET /auth/user/`` returns it.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the token or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the token or can't be reached.
         """
         return await self._get_object("/auth/user/")
 
@@ -97,8 +96,8 @@ class HeliumClient:
         :param course_group_id: An existing class group to import every class into, in place of ``data``'s class
                                 groups (which aren't imported).
         :return: What was imported.
-        :raises: :class:`~heliumedu.exception.HeliumValidationError`: When Helium rejects the data.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumValidationError`: When Helium rejects the data.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         files = {"file[]": (IMPORT_FILE_NAME, json.dumps(data).encode("utf-8"), "application/json")}
         params = {"dry_run": "true"} if dry_run else {}
@@ -107,10 +106,10 @@ class HeliumClient:
         body = await self._request("POST", "/importexport/import/", params=params, files=files)
 
         if not isinstance(body, dict):
-            return ImportResult(dry_run=dry_run)
+            return ImportResult()
         ids = body.pop("ids", None)
         counts = {section: count for section, count in body.items() if isinstance(count, int)}
-        return ImportResult(counts, ids if isinstance(ids, dict) else {}, dry_run)
+        return ImportResult(counts, ids if isinstance(ids, dict) else {})
 
     async def import_ics(self, ics: str, *, course_id: int | None = None, dry_run: bool = False) -> ImportResult:
         """
@@ -121,8 +120,8 @@ class HeliumClient:
         :param course_id: The class its entries become assignments in; unset makes them events.
         :param dry_run: Validate the import without keeping it.
         :return: What was imported.
-        :raises: :class:`~heliumedu.exception.HeliumValidationError`: When Helium rejects the calendar or the class.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumValidationError`: When Helium rejects the calendar or the class.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         files = {"file[]": (ICS_FILE_NAME, ics.encode("utf-8"), "text/calendar")}
         data = {"target_type": "events"} if course_id is None else {"target_type": "course", "course": str(course_id)}
@@ -130,16 +129,16 @@ class HeliumClient:
         body = await self._request("POST", "/importexport/import/ics/", params=params, files=files, data=data)
 
         if not isinstance(body, dict):
-            return ImportResult(dry_run=dry_run)
+            return ImportResult()
         counts = {section: count for section, count in body.items() if isinstance(count, int)}
-        return ImportResult(counts, {}, dry_run)
+        return ImportResult(counts)
 
     async def list_course_groups(self) -> list[dict[str, Any]]:
         """
         List the account's class groups (terms).
 
         :return: The class groups, as ``GET /planner/coursegroups/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         return await self._get_list("/planner/coursegroups/")
 
@@ -148,7 +147,7 @@ class HeliumClient:
         List the account's classes, across all class groups.
 
         :return: The classes, as ``GET /planner/courses/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         return await self._get_list("/planner/courses/")
 
@@ -157,7 +156,7 @@ class HeliumClient:
         List the account's class meeting schedules, across all classes.
 
         :return: The schedules, as ``GET /planner/courseschedules/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         return await self._get_list("/planner/courseschedules/")
 
@@ -166,7 +165,7 @@ class HeliumClient:
         List the account's grading categories, across all classes.
 
         :return: The categories, as ``GET /planner/categories/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         return await self._get_list("/planner/categories/")
 
@@ -190,7 +189,7 @@ class HeliumClient:
         :param category_ids: Only these categories' assignments.
         :param search: Only assignments whose title, category, or class title matches.
         :return: The assignments, as ``GET /planner/homework/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         params = _window(start, end)
         params["ordering"] = "start"
@@ -220,7 +219,7 @@ class HeliumClient:
         :param end: The end of the window (given together with ``start``).
         :param search: Only events whose title matches.
         :return: The events, as ``GET /planner/events/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         params = _window(start, end)
         if search:
@@ -232,7 +231,7 @@ class HeliumClient:
         Get the account's grades: class groups, then classes, then categories, as Helium calculates them.
 
         :return: The grades, as ``GET /planner/grades/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         return await self._get_object("/planner/grades/")
 
@@ -252,7 +251,7 @@ class HeliumClient:
         :param desired_grade: The desired overall class grade, 0-100. Give this or ``desired_gpa``.
         :param desired_gpa: The desired term GPA, on the class's grade scale. Give this or ``desired_grade``.
         :return: The result, as ``GET /planner/grades/needed/`` returns it.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         params = {"course": str(course_id), "target": str(target_id)}
         if desired_grade is not None:
@@ -260,27 +259,6 @@ class HeliumClient:
         if desired_gpa is not None:
             params["desired_gpa"] = str(desired_gpa)
         return await self._get_object("/planner/grades/needed/", params)
-
-    async def list_notes(self,
-                         search: str | None = None,
-                         *,
-                         homework_id: int | None = None,
-                         course_id: int | None = None,
-                         event_id: int | None = None,
-                         resource_id: int | None = None) -> list[dict[str, Any]]:
-        """
-        List the account's notes, with their content (a Quill Delta).
-
-        :param search: Only notes whose title, text, or linked item's title matches.
-        :param homework_id: Only the note linked to this assignment.
-        :param course_id: Only notes linked to this class, or to its assignments or resources.
-        :param event_id: Only the note linked to this event.
-        :param resource_id: Only the note linked to this resource.
-        :return: The notes, as ``GET /planner/notes/?include_content=true`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
-        """
-        return await self._get_list("/planner/notes/",
-                                    _notes_params(search, homework_id, course_id, event_id, resource_id))
 
     async def list_notes_page(self,
                               search: str | None = None,
@@ -303,7 +281,7 @@ class HeliumClient:
         :param page_size: How many notes a page holds (at most 100).
         :return: The page, its notes as ``GET /planner/notes/?include_content=true`` returns them. A page past the
             last is empty.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         params = {**_notes_params(search, homework_id, course_id, event_id, resource_id), "ordering": "-updated_at",
                   "page": str(page), "page_size": str(page_size)}
@@ -320,7 +298,7 @@ class HeliumClient:
         List the account's resource groups (e.g. a term's textbooks).
 
         :return: The resource groups, as ``GET /planner/resourcegroups/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         return await self._get_list("/planner/resourcegroups/")
 
@@ -329,7 +307,7 @@ class HeliumClient:
         List the account's resources (textbooks, materials, links), across all resource groups.
 
         :return: The resources, as ``GET /planner/resources/`` returns them.
-        :raises: :class:`~heliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
+        :raises: :class:`~pyheliumedu.exception.HeliumError`: When Helium refuses the request or can't be reached.
         """
         return await self._get_list("/planner/resources/")
 
@@ -375,32 +353,31 @@ class HeliumClient:
             body = None
         if 200 <= status < 300:
             return body
-        elif status == 400:
+        if status == 400:
             raise HeliumValidationError("Helium rejected the request's data.", {"errors": body})
-        elif status == 401:
+        if status == 401:
             raise HeliumAuthError("Helium didn't accept the token.")
-        elif status == 403:
+        if status == 403:
             raise HeliumPermissionError("The token wasn't granted access to this.", {"errors": body})
-        elif status == 404:
+        if status == 404:
             raise HeliumNotFoundError("Helium couldn't find what was asked for.")
-        elif status == 429:
+        if status == 429:
             retry_after = response.headers.get("Retry-After")
             try:
                 seconds = max(1, int(retry_after)) if retry_after is not None else DEFAULT_RETRY_AFTER
             except ValueError:
                 seconds = DEFAULT_RETRY_AFTER
             raise HeliumRateLimitedError("Helium asked for fewer requests.", {"retry_after": seconds})
-        elif status >= 500:
+        if status >= 500:
             raise HeliumConnectionError(f"Helium answered {status}.")
-        else:
-            raise HeliumValidationError(f"Helium answered {status}.", {"errors": body})
+        raise HeliumValidationError(f"Helium answered {status}.", {"errors": body})
 
 
 def _notes_params(search: str | None,
                   homework_id: int | None,
-                  course_id: int | None = None,
-                  event_id: int | None = None,
-                  resource_id: int | None = None) -> dict[str, str]:
+                  course_id: int | None,
+                  event_id: int | None,
+                  resource_id: int | None) -> dict[str, str]:
     params = {"include_content": "true"}
     if search:
         params["search"] = search
@@ -412,9 +389,12 @@ def _notes_params(search: str | None,
 
 
 def _window(start: date | datetime | None, end: date | datetime | None) -> dict[str, str]:
-    if (start is None) != (end is None):
-        raise ValueError("start and end must be given together")
-    return {"from": start.isoformat(), "to": end.isoformat()} if start is not None and end is not None else {}
+    params: dict[str, str] = {}
+    if start is not None:
+        params["from"] = start.isoformat()
+    if end is not None:
+        params["to"] = end.isoformat()
+    return params
 
 
 def _flag(value: bool) -> str:

@@ -50,3 +50,8 @@ GRADE_SCALE_PRESETS: Final[dict[GradeScalePreset, int]] = {
     "1.0-5.0 (pass at 50%)": 8,
     "1.0-5.0 (pass at 75%)": 9,
 }
+OAUTH_SCOPES: Final = (
+    "planner:read",
+    "planner:notes:read",
+    "planner:import",
+)
