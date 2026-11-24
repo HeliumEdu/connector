@@ -19,7 +19,6 @@ from helium_connector.serializers import describe_cycle, describe_cycle_days, de
 from helium_connector.settings import MAX_ASSIGNMENTS, MAX_EVENTS
 
 _MAX_EXPANDED_OCCURRENCES: Final = max(MAX_ASSIGNMENTS, MAX_EVENTS) + 1
-_ROW_ERROR = re.compile(r"^(?P<section>\w+) id (?P<row_id>\d+), (?P<field>\w+): (?P<message>.+)$", re.DOTALL)
 _PLAN_FIELD_NAMES = {"grade_scale_template": "grade_scale", "exceptions": "no_class_dates"}
 _SECTION_NAMES = {"course_groups": "terms", "courses": "classes", "course_schedules": "schedules",
                   "categories": "categories", "homework": "assignments", "events": "events"}
@@ -358,10 +357,12 @@ def explain_platform_errors(errors: Any, labels: dict[tuple[str, int], str]) -> 
     :return: The messages.
     """
     messages: list[str] = []
-    if isinstance(errors, dict):
+    if isinstance(errors, dict) and isinstance(errors.get("row_errors"), list):
+        messages += [_explain_row_error(row_error, labels) for row_error in errors["row_errors"]]
+    elif isinstance(errors, dict):
         for section, section_errors in errors.items():
             for error in (section_errors if isinstance(section_errors, list) else [section_errors]):
-                messages.append(_explain_row_error(str(section), str(error), labels))
+                messages.append(f"{str(section).replace('_', ' ')}: {error}")
     elif isinstance(errors, list):
         messages += [str(error) for error in errors]
     elif errors:
@@ -674,11 +675,9 @@ def _repeated_classes(plan: TermPlan) -> list[str]:
     return notes
 
 
-def _explain_row_error(section: str, error: str, labels: dict[tuple[str, int], str]) -> str:
-    match = _ROW_ERROR.match(error)
-    if match:
-        label = labels.get((match["section"], int(match["row_id"])))
-        if label:
-            field = _PLAN_FIELD_NAMES.get(match["field"], match["field"])
-            return f"{label}: {field.replace('_', ' ')}: {match['message']}"
-    return f"{section.replace('_', ' ')}: {error}"
+def _explain_row_error(row_error: dict[str, Any], labels: dict[tuple[str, int], str]) -> str:
+    section, row_id, field = row_error["section"], row_error["id"], row_error["field"]
+    item = labels.get((section, row_id)) or f"{section.replace('_', ' ')} {row_id}"
+    if field is None:
+        return f"{item}: {row_error['message']}"
+    return f"{item}: {_PLAN_FIELD_NAMES.get(field, field).replace('_', ' ')}: {row_error['message']}"
