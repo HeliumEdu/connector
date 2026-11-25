@@ -10,6 +10,7 @@ from pyheliumedu.exception import (
     HeliumNotFoundError,
     HeliumPermissionError,
     HeliumRateLimitedError,
+    HeliumServerError,
     HeliumValidationError,
 )
 from tests.testcase import IMPORT_COUNTS, TOKEN, USER, AsyncTestCase, uploaded_import
@@ -276,7 +277,7 @@ class TestErrors(HeliumClientTestCase):
     async def test_status_codes(self) -> None:
         # GIVEN
         client = self.given_client()
-        cases = [(403, HeliumPermissionError), (404, HeliumNotFoundError), (500, HeliumConnectionError),
+        cases = [(403, HeliumPermissionError), (404, HeliumNotFoundError), (500, HeliumServerError),
                  (409, HeliumValidationError)]
 
         for status, error in cases:
@@ -290,13 +291,15 @@ class TestErrors(HeliumClientTestCase):
     async def test_rate_limited(self) -> None:
         # GIVEN
         session = httpx.AsyncClient(transport=httpx.MockTransport(
-            lambda request: httpx.Response(429, headers={"Retry-After": "12"})))
+            lambda request: httpx.Response(429, json={"detail": "Too many attempts. Try again in a minute.",
+                                                      "code": "throttled"})))
         client = HeliumClient(session, TOKEN)
 
         # WHEN / THEN
         with self.assertRaises(HeliumRateLimitedError) as raised:
             await client.get_grades()
-        self.assertEqual({"retry_after": 12}, raised.exception.meta)
+        self.assertEqual({"errors": {"detail": "Too many attempts. Try again in a minute.", "code": "throttled"}},
+                         raised.exception.meta)
         await session.aclose()
 
     async def test_unreachable(self) -> None:

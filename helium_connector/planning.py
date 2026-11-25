@@ -348,6 +348,23 @@ def describe_rule(rule: str) -> str:
     return description
 
 
+def platform_messages(errors: Any) -> list[str]:
+    """
+    Helium's error messages.
+
+    :param errors: Helium's error body, or part of one.
+    :return: The messages, each nested one prefixed with its field.
+    """
+    if isinstance(errors, list):
+        return [message for error in errors for message in platform_messages(error)]
+    if set(errors) == {"message", "code"}:
+        return [errors["message"]]
+    if set(errors) == {"detail", "code"}:
+        return [errors["detail"]]
+    return [f"{str(field).replace('_', ' ')}: {message}"
+            for field, field_errors in errors.items() for message in platform_messages(field_errors)]
+
+
 def explain_platform_errors(errors: Any, labels: dict[tuple[str, int], str]) -> list[str]:
     """
     Turn Helium's import errors into messages that name what they're about.
@@ -359,12 +376,8 @@ def explain_platform_errors(errors: Any, labels: dict[tuple[str, int], str]) -> 
     messages: list[str] = []
     if isinstance(errors, dict) and isinstance(errors.get("row_errors"), list):
         messages += [_explain_row_error(row_error, labels) for row_error in errors["row_errors"]]
-    elif isinstance(errors, dict):
-        for section, section_errors in errors.items():
-            for error in (section_errors if isinstance(section_errors, list) else [section_errors]):
-                messages.append(f"{str(section).replace('_', ' ')}: {error}")
-    elif isinstance(errors, list):
-        messages += [str(error) for error in errors]
+    elif isinstance(errors, (dict, list)):
+        messages += platform_messages(errors)
     elif errors:
         messages.append(str(errors))
     return messages or ["Helium rejected the import without saying why."]

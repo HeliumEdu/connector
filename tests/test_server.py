@@ -527,7 +527,8 @@ class TestImportIcs(McpTestCase):
     async def test_unknown_class_is_a_problem(self) -> None:
         # GIVEN
         self.helium.answer("POST", "/importexport/import/ics/", 400,
-                           {"course": ["Unresolved `course` reference `99`."]})
+                           {"course": {"message": "Unresolved `course` reference `99`.",
+                                       "code": "unresolved_reference"}})
 
         # WHEN
         result = await self.call("import_ics", ics=self.ICS, class_id=99)
@@ -540,7 +541,8 @@ class TestImportIcs(McpTestCase):
     async def test_calendar_helium_cannot_read_is_a_problem(self) -> None:
         # GIVEN
         self.helium.answer("POST", "/importexport/import/ics/", 400,
-                           {"details": "No events in the calendar file could be imported."})
+                           {"details": {"message": "No events in the calendar file could be imported.",
+                                        "code": "import_ics_no_events"}})
 
         # WHEN
         result = await self.call("preview_import_ics", ics=self.ICS)
@@ -552,7 +554,9 @@ class TestImportIcs(McpTestCase):
     async def test_repeat_over_helium_limit_is_a_problem(self) -> None:
         # GIVEN
         self.helium.answer("POST", "/importexport/import/ics/", 400,
-                           {"homework": "\"Daily log\": A repeating assignment can create at most 366 assignments."})
+                           {"homework": {"message": "\"Daily log\": A repeating assignment can create at most 366 "
+                                                    "assignments.",
+                                         "code": "import_ics_recurrence_rule_invalid"}})
 
         # WHEN
         result = await self.call("import_ics", ics=self.ICS, class_id=52)
@@ -566,7 +570,10 @@ class TestImportIcs(McpTestCase):
     async def test_each_of_several_unreadable_calendar_details_is_a_problem(self) -> None:
         # GIVEN
         self.helium.answer("POST", "/importexport/import/ics/", 400,
-                           {"details": ["Invalid iCalendar in file: a.ics.", "Invalid iCalendar in file: b.ics."]})
+                           {"details": [{"message": "Invalid iCalendar in file: a.ics.",
+                                         "code": "import_ics_invalid"},
+                                        {"message": "Invalid iCalendar in file: b.ics.",
+                                         "code": "import_ics_invalid"}]})
 
         # WHEN
         result = await self.call("preview_import_ics", ics=self.ICS)
@@ -783,6 +790,41 @@ class TestReads(McpTestCase):
         self.assertTrue(result["isError"])
         self.assertIn("the most is 366", result["content"][0]["text"])
 
+    async def test_helium_error_says_helium_ran_into_a_problem(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/", 500, {"detail": "Server error. Please try again later.",
+                                                            "code": "server_error"})
+
+        # WHEN
+        result = await self.call("get_grades")
+
+        # THEN
+        self.assertTrue(result["isError"])
+        self.assertIn("Helium ran into a problem. Try again in a minute.", result["content"][0]["text"])
+
+    async def test_rate_limit_relays_helium_text(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/", 429, {"detail": "Too many attempts. Try again in a minute.",
+                                                            "code": "throttled"})
+
+        # WHEN
+        result = await self.call("get_grades")
+
+        # THEN
+        self.assertTrue(result["isError"])
+        self.assertIn("Too many attempts. Try again in a minute.", result["content"][0]["text"])
+
+    async def test_refusal_relays_helium_text(self) -> None:
+        # GIVEN
+        self.helium.answer("GET", "/planner/grades/", 404, {"detail": "Not found.", "code": "not_found"})
+
+        # WHEN
+        result = await self.call("get_grades")
+
+        # THEN
+        self.assertTrue(result["isError"])
+        self.assertIn("Helium couldn't do that: Not found.", result["content"][0]["text"])
+
     async def test_missing_read_access_says_how_to_fix_it(self) -> None:
         # GIVEN
         self.helium.answer("GET", "/planner/grades/", 403, {"detail": "insufficient scope"})
@@ -816,7 +858,8 @@ class TestReads(McpTestCase):
     async def test_needed_grade_explains_what_helium_refuses(self) -> None:
         # GIVEN
         self.helium.answer("GET", "/planner/grades/needed/", 400,
-                           {"target": ["Choose a category with weight and exactly one assignment left."]})
+                           {"target": {"message": "Choose a category with weight and exactly one assignment left.",
+                                       "code": "needed_grade_category_not_last"}})
 
         # WHEN
         result = await self.call("get_grades", target_grade=85, class_id=10, target_id=3)
@@ -848,7 +891,8 @@ class TestReads(McpTestCase):
     async def test_needed_grade_relays_helium_refusing_both_targets(self) -> None:
         # GIVEN
         self.helium.answer("GET", "/planner/grades/needed/", 400,
-                           ["Only one of 'desired_grade' or 'desired_gpa' may be given."])
+                           [{"message": "Only one of 'desired_grade' or 'desired_gpa' may be given.",
+                             "code": "needed_grade_target_multiple"}])
 
         # WHEN
         result = await self.call("get_grades", target_grade=85, target_gpa=3.5, class_id=10, target_id=3)

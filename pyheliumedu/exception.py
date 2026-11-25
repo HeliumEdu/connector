@@ -38,14 +38,15 @@ class HeliumValidationError(HeliumError):
 
 class HeliumNotFoundError(HeliumError):
     """
-    Raised when what was asked for doesn't exist (or isn't the token user's).
+    Raised when what was asked for doesn't exist (or isn't the token user's). ``meta["errors"]`` is Helium's error
+    body.
     """
     pass
 
 
 class HeliumRateLimitedError(HeliumError):
     """
-    Raised when Helium asks for fewer requests. ``meta["retry_after"]`` is how many seconds to wait.
+    Raised when Helium asks for fewer requests. ``meta["errors"]`` is Helium's error body.
     """
     pass
 
@@ -53,5 +54,12 @@ class HeliumRateLimitedError(HeliumError):
 class HeliumConnectionError(HeliumError):
     """
     Raised when Helium can't be reached (the network, a timeout, or an error on Helium's side).
+    """
+    pass
+
+
+class HeliumServerError(HeliumConnectionError):
+    """
+    Raised when Helium answers with an error on its side (a 5xx).
     """
     pass
