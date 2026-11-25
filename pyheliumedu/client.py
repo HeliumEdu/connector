@@ -12,6 +12,7 @@ from pyheliumedu.exception import (
     HeliumNotFoundError,
     HeliumPermissionError,
     HeliumRateLimitedError,
+    HeliumServerError,
     HeliumValidationError,
 )
 
@@ -20,7 +21,6 @@ DEFAULT_API_URL: Final = "https://api.heliumedu.com"
 #: How long one request to Helium may take, in seconds (an import runs synchronously, so allow for a large one).
 REQUEST_TIMEOUT: Final = 60
 #: How many seconds to wait when Helium asks to slow down without saying for how long.
-DEFAULT_RETRY_AFTER: Final = 60
 #: The name the import file is uploaded under (Helium picks the parser from the extension).
 IMPORT_FILE_NAME: Final = "helium-import.json"
 #: The name an ``.ics`` import's file is sent under.
@@ -363,16 +363,11 @@ class HeliumClient:
         if status == 403:
             raise HeliumPermissionError("The token wasn't granted access to this.", {"errors": body})
         if status == 404:
-            raise HeliumNotFoundError("Helium couldn't find what was asked for.")
+            raise HeliumNotFoundError("Helium couldn't find what was asked for.", {"errors": body})
         if status == 429:
-            retry_after = response.headers.get("Retry-After")
-            try:
-                seconds = max(1, int(retry_after)) if retry_after is not None else DEFAULT_RETRY_AFTER
-            except ValueError:
-                seconds = DEFAULT_RETRY_AFTER
-            raise HeliumRateLimitedError("Helium asked for fewer requests.", {"retry_after": seconds})
+            raise HeliumRateLimitedError("Helium asked for fewer requests.", {"errors": body})
         if status >= 500:
-            raise HeliumConnectionError(f"Helium answered {status}.")
+            raise HeliumServerError(f"Helium answered {status}.")
         raise HeliumValidationError(f"Helium answered {status}.", {"errors": body})
 
 

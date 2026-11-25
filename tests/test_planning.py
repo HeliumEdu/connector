@@ -867,8 +867,9 @@ class TestExplainPlatformErrors(unittest.TestCase):
 
     def test_errors_without_row_errors_name_their_section(self) -> None:
         # GIVEN
-        errors = {"courses": "Unresolved `course_group` reference `7` in courses.",
-                  "details": "Invalid JSON in file."}
+        errors = {"courses": {"message": "Unresolved `course_group` reference `7` in courses.",
+                              "code": "unresolved_reference"},
+                  "details": {"message": "Invalid JSON in file.", "code": "import_json_invalid"}}
 
         # WHEN
         messages = explain_platform_errors(errors, {})

@@ -18,7 +18,7 @@ from helium_connector import __version__
 from helium_connector.auth import HeliumTokenVerifier
 from helium_connector.models import ExistingTerm, ImportPlan, TermPlan
 from helium_connector.planning import build_import, describe_created, describe_import, existing_term, \
-    explain_platform_errors, summarize, to_confirm, validate, warnings
+    explain_platform_errors, platform_messages, summarize, to_confirm, validate, warnings
 from helium_connector.platform_enums import OAUTH_SCOPES
 from helium_connector.serializers import due_between, expand_events, serialize_assignments, serialize_classes, \
     serialize_grades, serialize_needed_grade, serialize_notes, serialize_resources, term_grade_scale_name
@@ -32,6 +32,7 @@ from pyheliumedu.exception import (
     HeliumNotFoundError,
     HeliumPermissionError,
     HeliumRateLimitedError,
+    HeliumServerError,
     HeliumValidationError,
 )
 
@@ -177,9 +178,8 @@ def create_server(settings: Settings, transport: httpx.AsyncBaseTransport | None
                 needed = await client.get_needed_grade(class_id, target_id, target_grade, desired_gpa=target_gpa)
             except HeliumValidationError as e:
                 errors = (e.meta or {}).get("errors")
-                messages = errors.values() if isinstance(errors, dict) else [errors]
-                return {"problems": [str(message) for value in messages
-                                     for message in (value if isinstance(value, list) else [value])]}
+                values = errors.values() if isinstance(errors, dict) else [errors]
+                return {"problems": [message for value in values for message in platform_messages(value)]}
             except HeliumNotFoundError:
                 return {"problems": [f"Class {class_id} isn't in Helium. get_grades gives each class's id."]}
         return {"class_id": class_id, target: wanted, **serialize_needed_grade(needed)}
@@ -616,8 +616,7 @@ def _explain_ics_errors(errors: Any, course_id: int | None) -> list[str]:
     if isinstance(errors, dict) and "course" in errors:
         return [f"Class {course_id} isn't in Helium. list_classes gives each class's id."]
     if isinstance(errors, dict) and "details" in errors:
-        details = errors["details"]
-        return [str(detail) for detail in details] if isinstance(details, list) else [str(details)]
+        return platform_messages(errors["details"])
     return explain_platform_errors(errors, {})
 
 
@@ -632,11 +631,14 @@ def _tool_error(e: HeliumError) -> ToolError:
         return ToolError("This Helium connection wasn't given access for that. Reconnect Helium and allow what it "
                          "asks for, then try again.")
     if isinstance(e, HeliumRateLimitedError):
-        return ToolError(f"Helium asked to slow down. Try again in {(e.meta or {}).get('retry_after')} seconds.")
+        return ToolError(" ".join(platform_messages((e.meta or {})["errors"])))
+    if isinstance(e, HeliumServerError):
+        logger.warning(f"Helium error: {e}")
+        return ToolError("Helium ran into a problem. Try again in a minute.")
     if isinstance(e, HeliumConnectionError):
         logger.warning(f"Helium unreachable: {e}")
         return ToolError("Helium couldn't be reached. Try again in a minute.")
-    return ToolError(f"Helium couldn't do that: {e}")
+    return ToolError(f"Helium couldn't do that: {' '.join(platform_messages((e.meta or {})['errors']))}")
 
 
 def _today(time_zone: ZoneInfo) -> date:
