@@ -7,7 +7,6 @@ the connector's.
 import argparse
 import json
 import re
-import sys
 import zipfile
 from pathlib import Path
 
@@ -17,10 +16,7 @@ VERSION_FILE = ROOT / "helium_connector" / "__init__.py"
 
 
 def read_version():
-    match = re.search(r'^__version__ = "([^"]+)"$', VERSION_FILE.read_text(), re.MULTILINE)
-    if not match:
-        sys.exit(f"✗ __version__ not found in {VERSION_FILE}")
-    return match.group(1)
+    return re.search(r'^__version__ = "([^"]+)"$', VERSION_FILE.read_text(), re.MULTILINE).group(1)
 
 
 def package(output, version):
@@ -40,7 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="Where to write the ZIP")
     args = parser.parse_args()
-    package(args.output.resolve(), read_version())
+    package(args.output, read_version())
 
 
 if __name__ == "__main__":

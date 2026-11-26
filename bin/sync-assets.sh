@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Syncs the logo from the www project into this repo. www is the source of truth for
-# these images; connector carries a renamed copy because the plugin ZIP must contain its icons.
+# this image; connector carries a renamed copy because the plugin ZIP must contain its icons.
 #
 # Files are only written when source and destination differ (byte-for-byte).
-# Requires no external tools beyond standard coreutils.
+# Requires only standard POSIX tools (cp, cmp).
 
-set -uo pipefail
+set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WWW="$REPO/../www"
@@ -34,7 +34,7 @@ for entry in "${SYNC_MAP[@]}"; do
   else
     cp "$src" "$dst"
     echo "  ✓ ${entry##*:}"
-    ((copied++))
+    copied=$((copied + 1))
   fi
 done
 echo "  ($copied files updated)"
