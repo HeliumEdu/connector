@@ -36,8 +36,8 @@ dev = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/HeliumEdu/connector#readme"
-"Source Code" = "https://github.com/HeliumEdu/connector"
+Documentation = "https://github.com/inertlabs/connector#readme"
+"Source Code" = "https://github.com/inertlabs/connector"
 
 [tool.setuptools]
 packages = ["pyheliumedu", "helium_connector"]
