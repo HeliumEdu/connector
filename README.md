@@ -22,10 +22,10 @@
 
 # Helium Connector
 
-[![Build](https://img.shields.io/github/actions/workflow/status/HeliumEdu/connector/build.yml)](https://github.com/HeliumEdu/connector/actions/workflows/build.yml)
-[![Coverage](https://img.shields.io/codecov/c/github/HeliumEdu/connector)](https://codecov.io/gh/HeliumEdu/connector)
-[![Code Quality](https://app.codacy.com/project/badge/Grade/111cb4a95255430da06806783ae2c16e)](https://app.codacy.com/gh/HeliumEdu/connector/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-![GitHub License](https://img.shields.io/github/license/heliumedu/connector)
+[![Build](https://img.shields.io/github/actions/workflow/status/inertlabs/connector/build.yml)](https://github.com/inertlabs/connector/actions/workflows/build.yml)
+[![Coverage](https://img.shields.io/codecov/c/github/inertlabs/connector)](https://codecov.io/gh/inertlabs/connector)
+[![Code Quality](https://app.codacy.com/project/badge/Grade/111cb4a95255430da06806783ae2c16e)](https://app.codacy.com/gh/inertlabs/connector/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+![GitHub License](https://img.shields.io/github/license/inertlabs/connector)
 
 The Helium `connector` is a remote [MCP](https://modelcontextprotocol.io) server that connects AI assistants to a
 student's Helium account, to import a term from syllabi and ask about what's due, notes, classes, resources, and

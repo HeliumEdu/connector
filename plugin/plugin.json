@@ -8,7 +8,7 @@
     "url": "https://www.heliumedu.com/"
   },
   "homepage": "https://www.heliumedu.com/",
-  "repository": "https://github.com/HeliumEdu/connector",
+  "repository": "https://github.com/inertlabs/connector",
   "license": "Apache-2.0",
   "keywords": ["student planner", "syllabus", "semester", "quarter", "homework", "classes", "grades", "education"],
   "extensions": {

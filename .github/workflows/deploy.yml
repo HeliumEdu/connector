@@ -75,7 +75,7 @@ jobs:
   deploy:
     name: Deploy to prod
     needs: [determine-version, verify]
-    uses: HeliumEdu/.github/.github/workflows/terraform-deploy.yml@main
+    uses: inertlabs/.github/.github/workflows/terraform-deploy.yml@main
     with:
       component: connector
       version: ${{ needs.determine-version.outputs.version }}
